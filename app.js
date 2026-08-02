@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbzS_b7558FvxQK7YP-lVCwIe68uNyez4Z7v2zw4NJGLPA8WECurzVYeLZA4jEqE9eNy/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbyjyyuplbAxrNrp-IwHlGP-2MGduxQFq5BYbHXOVx_oDhXEkBXl9hZK01W79ZJx8I7n/exec"; // Paste your Web App URL here
 
 window.addEventListener("popstate", router);
 
@@ -45,7 +45,10 @@ function updateAuthUI() {
     if (addLink) addLink.classList.remove("hidden");
     if (userDisplay) {
       userDisplay.classList.remove("hidden");
-      userDisplay.innerText = `@${user.username}` + (user.isEditor ? " (Editor)" : "");
+      let roleTag = "";
+      if (user.isEditor) roleTag = " (Editor)";
+      else if (user.isTranscriber) roleTag = " (Transcriber)";
+      userDisplay.innerText = `@${user.username}${roleTag}`;
     }
   } else {
     if (loginBtn) loginBtn.classList.remove("hidden");
@@ -161,12 +164,12 @@ function renderAddSong(container) {
       <div class="form-group"><label>Cover Art</label><input type="file" id="song-cover" accept="image/*"></div>
       <div class="form-group"><label>Lyrics</label><textarea id="song-lyrics" rows="8"></textarea></div>
       
-      <h3>Audio / Streaming Links</h3>
-      <div class="form-group"><label>YouTube URL</label><input type="text" id="audio-youtube"></div>
-      <div class="form-group"><label>Spotify URL</label><input type="text" id="audio-spotify"></div>
-      <div class="form-group"><label>Apple Music URL</label><input type="text" id="audio-apple"></div>
-      <div class="form-group"><label>SoundCloud URL</label><input type="text" id="audio-soundcloud"></div>
-      <div class="form-group"><label>Bandcamp URL</label><input type="text" id="audio-bandcamp"></div>
+      <h3>Audio Links</h3>
+      <div class="form-group"><label>YouTube</label><input type="text" id="audio-youtube"></div>
+      <div class="form-group"><label>Spotify</label><input type="text" id="audio-spotify"></div>
+      <div class="form-group"><label>Apple Music</label><input type="text" id="audio-apple"></div>
+      <div class="form-group"><label>SoundCloud</label><input type="text" id="audio-soundcloud"></div>
+      <div class="form-group"><label>Bandcamp</label><input type="text" id="audio-bandcamp"></div>
 
       <button class="btn-submit" id="submit-song-btn" onclick="submitSong()">Publish Lyrics</button>
     </div>
@@ -228,8 +231,11 @@ async function renderSongDetail(container, slug) {
     const s = res.song;
     const user = getUser();
     const isEditor = user && user.isEditor;
+    const isTranscriber = user && user.isTranscriber;
     const isCreator = user && user.username === s.createdBy;
-    const canEdit = isEditor || (isCreator && !s.isComplete);
+
+    // Transcribers, Editors, and creators can edit (unless locked complete)
+    const canEdit = isEditor || isTranscriber || (isCreator && !s.isComplete);
 
     container.innerHTML = `
       <div id="song-edit-status" class="status-banner hidden"></div>
@@ -253,14 +259,22 @@ async function renderSongDetail(container, slug) {
 
       ${canEdit ? `
         <div id="edit-song-box" class="form-container hidden" style="margin-top:2rem;">
-          <h3>Edit Song Data</h3>
+          <h3>Edit Song Information</h3>
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${s.title}"></div>
           <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${s.artist}"></div>
           <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${s.lyrics}</textarea></div>
+          
+          <h4>Audio Links</h4>
+          <div class="form-group"><label>YouTube</label><input type="text" id="edit-youtube" value="${s.audioLinks.youtube || ''}"></div>
+          <div class="form-group"><label>Spotify</label><input type="text" id="edit-spotify" value="${s.audioLinks.spotify || ''}"></div>
+          <div class="form-group"><label>Apple Music</label><input type="text" id="edit-apple" value="${s.audioLinks.apple || ''}"></div>
+          <div class="form-group"><label>SoundCloud</label><input type="text" id="edit-soundcloud" value="${s.audioLinks.soundcloud || ''}"></div>
+          <div class="form-group"><label>Bandcamp</label><input type="text" id="edit-bandcamp" value="${s.audioLinks.bandcamp || ''}"></div>
+
           ${isEditor ? `
-            <div class="form-group" style="display:flex; align-items:center; gap:0.5rem;">
+            <div class="form-group" style="display:flex; align-items:center; gap:0.5rem; margin-top:1rem;">
               <input type="checkbox" id="edit-is-complete" ${s.isComplete ? "checked" : ""} style="width:auto;">
-              <label for="edit-is-complete" style="margin:0;">Mark Lyrics as Complete (Locks non-editors out)</label>
+              <label for="edit-is-complete" style="margin:0;">Mark Lyrics as Complete (Locks out non-editors)</label>
             </div>
           ` : ''}
           <button class="btn-submit" onclick="saveSongEdit('${s.id}')">Save Changes</button>
@@ -272,6 +286,14 @@ async function renderSongDetail(container, slug) {
 
 async function saveSongEdit(songId) {
   const user = getUser();
+  const audioLinks = {
+    youtube: document.getElementById("edit-youtube").value,
+    spotify: document.getElementById("edit-spotify").value,
+    apple: document.getElementById("edit-apple").value,
+    soundcloud: document.getElementById("edit-soundcloud").value,
+    bandcamp: document.getElementById("edit-bandcamp").value
+  };
+
   const res = await apiCall({
     action: "updateSong",
     id: songId,
@@ -279,6 +301,7 @@ async function saveSongEdit(songId) {
     title: document.getElementById("edit-title").value,
     artist: document.getElementById("edit-artist").value,
     lyrics: document.getElementById("edit-lyrics").value,
+    audioLinks: audioLinks,
     isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
   });
 
@@ -287,7 +310,7 @@ async function saveSongEdit(songId) {
 }
 
 async function deleteSong(songId) {
-  if (!confirm("Are you sure you want to delete this song permanently?")) return;
+  if (!confirm("Are you sure you want to delete this song page permanently?")) return;
   const user = getUser();
   const res = await apiCall({ action: "deleteSong", id: songId, username: user.username });
   if (res.success) navigateTo("/");
@@ -310,25 +333,25 @@ async function renderArtistDetail(container, slug) {
         <div>
           <h1>${a.name}</h1>
           ${a.akas ? `<p style="color:var(--text-dim);">AKA: ${a.akas}</p>` : ''}
-          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#333;">Edit Artist Page</button>` : ''}
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#333;">Edit Artist Profile</button>` : ''}
         </div>
       </div>
 
-      <h3 style="margin-top:2rem;">Songs</h3>
+      <h3 style="margin-top:2rem;">Songs by ${a.name}</h3>
       <div class="grid">
-        ${a.songs.map(s => `
+        ${a.songs.length > 0 ? a.songs.map(s => `
           <a href="/song/${s.slug}" data-link class="card">
             <img src="${s.coverUrl}">
             <div class="card-info">
               <div class="card-title">${s.title}</div>
             </div>
           </a>
-        `).join('')}
+        `).join('') : '<p>No songs found for this artist.</p>'}
       </div>
 
       ${canEdit ? `
         <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
-          <h3>Edit Artist Profile</h3>
+          <h3>Edit Profile Information</h3>
           <div class="form-group"><label>AKAs</label><input type="text" id="artist-akas" value="${a.akas}"></div>
           <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
           <button class="btn-submit" onclick="saveArtistEdit('${a.slug}')">Save Profile</button>
@@ -354,7 +377,6 @@ async function saveArtistEdit(slug) {
     action: "updateArtist",
     slug,
     username: user.username,
-    name: slug,
     akas: document.getElementById("artist-akas").value,
     pfpBase64
   });
