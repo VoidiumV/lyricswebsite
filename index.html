@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LyriX - Community Lyrics</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="nav-container">
+      <a href="/" class="logo">LyriX</a>
+      <nav id="nav-links">
+        <a href="/">Home</a>
+        <a href="/add" id="add-link" class="hidden">Add Lyrics</a>
+        <a href="/login" id="login-btn">Login / Register</a>
+        <span id="user-display" class="hidden"></span>
+        <button id="logout-btn" class="hidden" onclick="logout()">Logout</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- Dynamic views injected here -->
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
