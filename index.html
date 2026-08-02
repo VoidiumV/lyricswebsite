@@ -10,6 +10,10 @@
   <header>
     <div class="nav-container">
       <a href="/" class="logo">LyriX</a>
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="Search songs or artists..." onkeydown="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()">Search</button>
+      </div>
       <nav id="nav-links">
         <a href="/">Home</a>
         <a href="/add" id="add-link" class="hidden">Add Lyrics</a>
@@ -21,7 +25,7 @@
   </header>
 
   <main id="app">
-    <!-- Dynamic views injected here -->
+    <!-- Dynamic Content -->
   </main>
 
   <script src="app.js"></script>
