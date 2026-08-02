@@ -1,18 +1,16 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbwf6YvyMvVkf23e8_ciuh2Mw-_ze5d-3ant48xm1vW0przDnL_H0ZPqhXp6SyUubTzu/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbzS_b7558FvxQK7YP-lVCwIe68uNyez4Z7v2zw4NJGLPA8WECurzVYeLZA4jEqE9eNy/exec"; // Paste your Web App URL here
 
-// Router State
 window.addEventListener("popstate", router);
+
 document.addEventListener("DOMContentLoaded", () => {
   updateAuthUI();
-  
-  // Intercept client links
   document.body.addEventListener("click", e => {
-    if (e.target.matches("[data-link]")) {
+    const link = e.target.closest("[data-link]");
+    if (link) {
       e.preventDefault();
-      navigateTo(e.target.href);
+      navigateTo(link.href);
     }
   });
-
   router();
 });
 
@@ -22,7 +20,6 @@ function navigateTo(url) {
 }
 
 async function apiCall(data) {
-  // Apps Script requires text/plain body to avoid CORS preflight failures
   const response = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -43,16 +40,18 @@ function updateAuthUI() {
   const userDisplay = document.getElementById("user-display");
 
   if (user) {
-    loginBtn.classList.add("hidden");
-    logoutBtn.classList.remove("hidden");
-    addLink.classList.remove("hidden");
-    userDisplay.classList.remove("hidden");
-    userDisplay.innerText = `@${user.username}`;
+    if (loginBtn) loginBtn.classList.add("hidden");
+    if (logoutBtn) logoutBtn.classList.remove("hidden");
+    if (addLink) addLink.classList.remove("hidden");
+    if (userDisplay) {
+      userDisplay.classList.remove("hidden");
+      userDisplay.innerText = `@${user.username}` + (user.isEditor ? " (Editor)" : "");
+    }
   } else {
-    loginBtn.classList.remove("hidden");
-    logoutBtn.classList.add("hidden");
-    addLink.classList.add("hidden");
-    userDisplay.classList.add("hidden");
+    if (loginBtn) loginBtn.classList.remove("hidden");
+    if (logoutBtn) logoutBtn.classList.add("hidden");
+    if (addLink) addLink.classList.add("hidden");
+    if (userDisplay) userDisplay.classList.add("hidden");
   }
 }
 
@@ -62,35 +61,47 @@ function logout() {
   navigateTo("/");
 }
 
-// Client Router
+function showStatus(elementId, message, isSuccess = false) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el.innerText = message;
+  el.className = `status-banner ${isSuccess ? 'success' : 'error'}`;
+  el.classList.remove("hidden");
+}
+
+function doSearch() {
+  const q = document.getElementById("search-input").value;
+  navigateTo(`/?q=${encodeURIComponent(q)}`);
+}
+
 async function router() {
   const path = window.location.pathname;
+  const searchParams = new URLSearchParams(window.location.search);
   const app = document.getElementById("app");
 
-  if (path === "/") {
-    renderHome(app);
+  if (path === "/" || path === "") {
+    renderHome(app, searchParams.get("q"));
   } else if (path === "/login") {
     renderLogin(app);
   } else if (path === "/add") {
     renderAddSong(app);
   } else if (path.startsWith("/song/")) {
-    const id = path.split("/song/")[1];
-    renderSongDetail(app, id);
+    renderSongDetail(app, path.replace("/song/", ""));
+  } else if (path.startsWith("/artist/")) {
+    renderArtistDetail(app, path.replace("/artist/", ""));
   } else {
     app.innerHTML = "<h2>404 - Page Not Found</h2>";
   }
 }
 
-// Views
-async function renderHome(container) {
-  container.innerHTML = "<h2>Recent Additions</h2><div class='grid' id='song-grid'>Loading...</div>";
-  
-  const res = await apiCall({ action: "getSongs" });
+async function renderHome(container, query = "") {
+  container.innerHTML = `<h2>${query ? `Search Results for "${query}"` : 'Recent Additions'}</h2><div class='grid' id='song-grid'>Loading...</div>`;
+  const res = await apiCall({ action: "getSongs", q: query });
   const grid = document.getElementById("song-grid");
 
   if (res.success && res.songs.length > 0) {
     grid.innerHTML = res.songs.map(song => `
-      <a href="/song/${song.id}" data-link class="card">
+      <a href="/song/${song.slug}" data-link class="card">
         <img src="${song.coverUrl}" alt="${song.title}">
         <div class="card-info">
           <div class="card-title">${song.title}</div>
@@ -99,7 +110,7 @@ async function renderHome(container) {
       </a>
     `).join("");
   } else {
-    grid.innerHTML = "<p>No songs found yet. Be the first to add one!</p>";
+    grid.innerHTML = "<p>No matching songs found.</p>";
   }
 }
 
@@ -107,14 +118,9 @@ function renderLogin(container) {
   container.innerHTML = `
     <div class="form-container">
       <h2>Account</h2>
-      <div class="form-group">
-        <label>Username</label>
-        <input type="text" id="auth-username" required>
-      </div>
-      <div class="form-group">
-        <label>Password</label>
-        <input type="password" id="auth-password" required>
-      </div>
+      <div id="auth-status" class="status-banner hidden"></div>
+      <div class="form-group"><label>Username</label><input type="text" id="auth-username" required></div>
+      <div class="form-group"><label>Password</label><input type="password" id="auth-password" required></div>
       <button class="btn-submit" onclick="handleAuth('login')">Login</button>
       <button class="btn-submit" style="background:#444; margin-top:0.5rem;" onclick="handleAuth('register')">Register New Account</button>
     </div>
@@ -124,17 +130,17 @@ function renderLogin(container) {
 async function handleAuth(type) {
   const username = document.getElementById("auth-username").value;
   const password = document.getElementById("auth-password").value;
-
-  if (!username || !password) return alert("Please fill all fields");
+  if (!username || !password) return showStatus("auth-status", "Please fill in all fields.");
 
   const res = await apiCall({ action: type, username, password });
   if (res.success) {
-    localStorage.setItem("lyrix_user", JSON.stringify(res.user));
-    updateAuthUI();
-    navigateTo("/");
-  } else {
-    alert(res.message);
-  }
+    if (type === "register") showStatus("auth-status", res.message, true);
+    else {
+      localStorage.setItem("lyrix_user", JSON.stringify(res.user));
+      updateAuthUI();
+      navigateTo("/");
+    }
+  } else showStatus("auth-status", res.message);
 }
 
 function renderAddSong(container) {
@@ -144,42 +150,42 @@ function renderAddSong(container) {
   container.innerHTML = `
     <div class="form-container">
       <h2>Add New Song Lyrics</h2>
-      <div class="form-group">
-        <label>Song Title</label>
-        <input type="text" id="song-title" required>
+      <div id="song-status" class="status-banner hidden"></div>
+      <div class="form-group"><label>Song Title</label><input type="text" id="song-title"></div>
+      <div class="form-group"><label>Artist</label><input type="text" id="song-artist"></div>
+      <div class="form-group" style="display:flex; align-items:center; gap:0.5rem;">
+        <input type="checkbox" id="is-single" onchange="document.getElementById('album-group').classList.toggle('hidden', this.checked)" style="width:auto;">
+        <label for="is-single" style="margin:0;">This song is a Single</label>
       </div>
-      <div class="form-group">
-        <label>Artist</label>
-        <input type="text" id="song-artist" required>
-      </div>
-      <div class="form-group">
-        <label>Album</label>
-        <input type="text" id="song-album">
-      </div>
-      <div class="form-group">
-        <label>Cover Art (Image File)</label>
-        <input type="file" id="song-cover" accept="image/*">
-      </div>
-      <div class="form-group">
-        <label>Lyrics</label>
-        <textarea id="song-lyrics" rows="10" required></textarea>
-      </div>
-      <button class="btn-submit" onclick="submitSong()">Publish Lyrics</button>
+      <div class="form-group" id="album-group"><label>Album / EP</label><input type="text" id="song-album"></div>
+      <div class="form-group"><label>Cover Art</label><input type="file" id="song-cover" accept="image/*"></div>
+      <div class="form-group"><label>Lyrics</label><textarea id="song-lyrics" rows="8"></textarea></div>
+      
+      <h3>Audio / Streaming Links</h3>
+      <div class="form-group"><label>YouTube URL</label><input type="text" id="audio-youtube"></div>
+      <div class="form-group"><label>Spotify URL</label><input type="text" id="audio-spotify"></div>
+      <div class="form-group"><label>Apple Music URL</label><input type="text" id="audio-apple"></div>
+      <div class="form-group"><label>SoundCloud URL</label><input type="text" id="audio-soundcloud"></div>
+      <div class="form-group"><label>Bandcamp URL</label><input type="text" id="audio-bandcamp"></div>
+
+      <button class="btn-submit" id="submit-song-btn" onclick="submitSong()">Publish Lyrics</button>
     </div>
   `;
 }
 
 async function submitSong() {
   const user = getUser();
+  const btn = document.getElementById("submit-song-btn");
   const title = document.getElementById("song-title").value;
   const artist = document.getElementById("song-artist").value;
-  const album = document.getElementById("song-album").value;
-  const lyrics = document.getElementById("song-lyrics").value;
-  const fileInput = document.getElementById("song-cover");
 
-  if (!title || !artist || !lyrics) return alert("Title, Artist, and Lyrics are required.");
+  if (!title || !artist) return showStatus("song-status", "Title and Artist are required.");
+
+  btn.disabled = true;
+  btn.innerText = "Publishing...";
 
   let coverBase64 = null;
+  const fileInput = document.getElementById("song-cover");
   if (fileInput.files.length > 0) {
     coverBase64 = await new Promise((res) => {
       const reader = new FileReader();
@@ -188,37 +194,171 @@ async function submitSong() {
     });
   }
 
+  const audioLinks = {
+    youtube: document.getElementById("audio-youtube").value,
+    spotify: document.getElementById("audio-spotify").value,
+    apple: document.getElementById("audio-apple").value,
+    soundcloud: document.getElementById("audio-soundcloud").value,
+    bandcamp: document.getElementById("audio-bandcamp").value
+  };
+
   const res = await apiCall({
     action: "addSong",
     username: user.username,
-    title, artist, album, lyrics, coverBase64
+    title, artist,
+    isSingle: document.getElementById("is-single").checked,
+    album: document.getElementById("song-album").value,
+    lyrics: document.getElementById("song-lyrics").value,
+    coverBase64,
+    audioLinks
   });
 
-  if (res.success) {
-    navigateTo(`/song/${res.songId}`);
-  } else {
-    alert("Error publishing song: " + res.message);
+  if (res.success) navigateTo(`/song/${res.slug}`);
+  else {
+    btn.disabled = false;
+    showStatus("song-status", res.message);
   }
 }
 
-async function renderSongDetail(container, id) {
-  container.innerHTML = "Loading song...";
-  const res = await apiCall({ action: "getSong", id });
+async function renderSongDetail(container, slug) {
+  container.innerHTML = "<p>Loading...</p>";
+  const res = await apiCall({ action: "getSong", slug });
 
   if (res.success) {
     const s = res.song;
+    const user = getUser();
+    const isEditor = user && user.isEditor;
+    const isCreator = user && user.username === s.createdBy;
+    const canEdit = isEditor || (isCreator && !s.isComplete);
+
     container.innerHTML = `
+      <div id="song-edit-status" class="status-banner hidden"></div>
       <div class="song-detail">
         <div>
           <img src="${s.coverUrl}" class="song-cover" alt="${s.title}">
-          <h1 style="margin-bottom:0.2rem;">${s.title}</h1>
-          <h3 style="color:var(--text-dim); margin-top:0;">${s.artist} ${s.album ? '• ' + s.album : ''}</h3>
+          <h1>${s.title} ${s.isComplete ? '✅' : ''}</h1>
+          <h3><a href="/artist/${s.artistSlug}" data-link style="color:var(--accent);">${s.artist}</a> ${s.album ? '• ' + s.album : ''}</h3>
           <p style="font-size:0.85rem; color:#666;">Added by @${s.createdBy}</p>
+
+          <div class="audio-links" style="margin-top:1rem;">
+            <h4>Listen On:</h4>
+            ${Object.entries(s.audioLinks).map(([k, v]) => v ? `<a href="${v}" target="_blank" class="badge">${k}</a> ` : '').join('')}
+          </div>
+
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#333; margin-top:1rem;">Edit Song</button>` : ''}
+          ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:#842029; margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
         </div>
         <div class="lyrics-box">${s.lyrics}</div>
       </div>
+
+      ${canEdit ? `
+        <div id="edit-song-box" class="form-container hidden" style="margin-top:2rem;">
+          <h3>Edit Song Data</h3>
+          <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${s.title}"></div>
+          <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${s.artist}"></div>
+          <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${s.lyrics}</textarea></div>
+          ${isEditor ? `
+            <div class="form-group" style="display:flex; align-items:center; gap:0.5rem;">
+              <input type="checkbox" id="edit-is-complete" ${s.isComplete ? "checked" : ""} style="width:auto;">
+              <label for="edit-is-complete" style="margin:0;">Mark Lyrics as Complete (Locks non-editors out)</label>
+            </div>
+          ` : ''}
+          <button class="btn-submit" onclick="saveSongEdit('${s.id}')">Save Changes</button>
+        </div>
+      ` : ''}
     `;
-  } else {
-    container.innerHTML = "<h2>Song not found</h2>";
+  } else container.innerHTML = "<h2>Song not found</h2>";
+}
+
+async function saveSongEdit(songId) {
+  const user = getUser();
+  const res = await apiCall({
+    action: "updateSong",
+    id: songId,
+    username: user.username,
+    title: document.getElementById("edit-title").value,
+    artist: document.getElementById("edit-artist").value,
+    lyrics: document.getElementById("edit-lyrics").value,
+    isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
+  });
+
+  if (res.success) navigateTo(`/song/${res.slug}`);
+  else showStatus("song-edit-status", res.message);
+}
+
+async function deleteSong(songId) {
+  if (!confirm("Are you sure you want to delete this song permanently?")) return;
+  const user = getUser();
+  const res = await apiCall({ action: "deleteSong", id: songId, username: user.username });
+  if (res.success) navigateTo("/");
+  else showStatus("song-edit-status", res.message);
+}
+
+async function renderArtistDetail(container, slug) {
+  container.innerHTML = "<p>Loading artist...</p>";
+  const res = await apiCall({ action: "getArtist", slug });
+
+  if (res.success) {
+    const a = res.artist;
+    const user = getUser();
+    const canEdit = user && (user.isEditor || user.username === a.createdBy);
+
+    container.innerHTML = `
+      <div id="artist-status" class="status-banner hidden"></div>
+      <div style="display:flex; gap:2rem; align-items:center; flex-wrap:wrap;">
+        <img src="${a.pfpUrl}" style="width:150px; height:150px; border-radius:50%; object-fit:cover;">
+        <div>
+          <h1>${a.name}</h1>
+          ${a.akas ? `<p style="color:var(--text-dim);">AKA: ${a.akas}</p>` : ''}
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#333;">Edit Artist Page</button>` : ''}
+        </div>
+      </div>
+
+      <h3 style="margin-top:2rem;">Songs</h3>
+      <div class="grid">
+        ${a.songs.map(s => `
+          <a href="/song/${s.slug}" data-link class="card">
+            <img src="${s.coverUrl}">
+            <div class="card-info">
+              <div class="card-title">${s.title}</div>
+            </div>
+          </a>
+        `).join('')}
+      </div>
+
+      ${canEdit ? `
+        <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
+          <h3>Edit Artist Profile</h3>
+          <div class="form-group"><label>AKAs</label><input type="text" id="artist-akas" value="${a.akas}"></div>
+          <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
+          <button class="btn-submit" onclick="saveArtistEdit('${a.slug}')">Save Profile</button>
+        </div>
+      ` : ''}
+    `;
+  } else container.innerHTML = "<h2>Artist not found</h2>";
+}
+
+async function saveArtistEdit(slug) {
+  const user = getUser();
+  let pfpBase64 = null;
+  const fileInput = document.getElementById("artist-pfp");
+  if (fileInput.files.length > 0) {
+    pfpBase64 = await new Promise((res) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result);
+      reader.readAsDataURL(fileInput.files[0]);
+    });
   }
+
+  const res = await apiCall({
+    action: "updateArtist",
+    slug,
+    username: user.username,
+    name: slug,
+    akas: document.getElementById("artist-akas").value,
+    pfpBase64
+  });
+
+  if (res.success) navigateTo(`/artist/${slug}`);
+  else showStatus("artist-status", res.message);
 }
