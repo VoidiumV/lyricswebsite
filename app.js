@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbz7YSy4UaSvT3naIuIU9MuWgYvh2YjYPeYLLDGuTcIL33JAhHbjDuzRMh0bAcpOUVO0/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbwf6YvyMvVkf23e8_ciuh2Mw-_ze5d-3ant48xm1vW0przDnL_H0ZPqhXp6SyUubTzu/exec"; // Paste your Web App URL here
 
 // Router State
 window.addEventListener("popstate", router);
