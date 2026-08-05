@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbyjyyuplbAxrNrp-IwHlGP-2MGduxQFq5BYbHXOVx_oDhXEkBXl9hZK01W79ZJx8I7n/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbwj-0Rl77sljgV6lwlfZWTUcReinclQvNcQ9b6yoIPKwdgqFXBjUSGtlTp6UKfIPhe9/exec"; // Paste your Web App URL here
 
 window.addEventListener("popstate", router);
 
@@ -26,6 +26,53 @@ async function apiCall(data) {
     body: JSON.stringify(data)
   });
   return await response.json();
+}
+
+// ---------- small utils ----------
+
+function esc(str) {
+  return (str === undefined || str === null ? "" : str.toString())
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function initials(name) {
+  return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+}
+
+function coverHtml(url, label, cls) {
+  cls = cls || "";
+  if (url) return `<img src="${esc(url)}" alt="${esc(label)}" loading="lazy" class="${cls}">`;
+  return `<div class="cover-fallback ${cls}">${esc(initials(label))}</div>`;
+}
+
+function avatarHtml(url, label) {
+  if (url) return `<img src="${esc(url)}" alt="${esc(label)}" loading="lazy">`;
+  return `<div class="avatar-fallback">${esc(initials(label))}</div>`;
+}
+
+// Resizes + compresses an image client-side before it's base64-encoded and
+// POSTed to Apps Script. Full-resolution phone photos are the #1 cause of
+// slow uploads (multi-MB payloads to parse, decode, and push to Drive).
+function fileToCompressedBase64(file, maxDim = 900, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not load image"));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else if (height >= width && height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function getUser() {
@@ -97,25 +144,55 @@ async function router() {
   }
 }
 
+// ---------- home ----------
+
 async function renderHome(container, query = "") {
-  container.innerHTML = `<h2>${query ? `Search Results for "${query}"` : 'Recent Additions'}</h2><div class='grid' id='song-grid'>Loading...</div>`;
-  const res = await apiCall({ action: "getSongs", q: query });
+  container.innerHTML = `
+    <div class="hero">
+      <h1>Lyrics, <span class="highlight">annotated by the community</span></h1>
+      <p>Search for a song or artist, or add the ones missing.</p>
+      <div class="search-box">
+        <input type="text" id="hero-search" placeholder="Search songs or artists..." value="${esc(query || "")}" onkeydown="if(event.key==='Enter') navigateTo('/?q='+encodeURIComponent(this.value))">
+        <button onclick="navigateTo('/?q='+encodeURIComponent(document.getElementById('hero-search').value))">Search</button>
+      </div>
+    </div>
+    <h2 class="section-title">Artists</h2>
+    <div class="artist-row" id="artist-row">Loading...</div>
+    <h2 class="section-title">${query ? `Results for "${esc(query)}"` : "Recently Added"}</h2>
+    <div class="grid" id="song-grid">Loading...</div>
+  `;
+
+  const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
   const grid = document.getElementById("song-grid");
+  const artistRow = document.getElementById("artist-row");
 
   if (res.success && res.songs.length > 0) {
     grid.innerHTML = res.songs.map(song => `
       <a href="/song/${song.slug}" data-link class="card">
-        <img src="${song.coverUrl}" alt="${song.title}">
+        ${coverHtml(song.coverUrl, song.title)}
         <div class="card-info">
-          <div class="card-title">${song.title}</div>
-          <div class="card-artist">${song.artist}</div>
+          <div class="card-title">${esc(song.title)}</div>
+          <div class="card-artist">${esc(song.artist)}</div>
         </div>
       </a>
     `).join("");
   } else {
-    grid.innerHTML = "<p>No matching songs found.</p>";
+    grid.innerHTML = `<p class="empty-state">No matching songs found.</p>`;
+  }
+
+  if (res.success && res.artists && res.artists.length > 0) {
+    artistRow.innerHTML = res.artists.map(a => `
+      <a href="/artist/${a.slug}" data-link class="artist-chip">
+        ${avatarHtml(a.pfpUrl, a.name)}
+        <div class="artist-chip-name">${esc(a.name)}</div>
+      </a>
+    `).join("");
+  } else {
+    artistRow.innerHTML = `<p class="empty-state">No artist pages yet.</p>`;
   }
 }
+
+// ---------- auth ----------
 
 function renderLogin(container) {
   container.innerHTML = `
@@ -125,7 +202,7 @@ function renderLogin(container) {
       <div class="form-group"><label>Username</label><input type="text" id="auth-username" required></div>
       <div class="form-group"><label>Password</label><input type="password" id="auth-password" required></div>
       <button class="btn-submit" onclick="handleAuth('login')">Login</button>
-      <button class="btn-submit" style="background:#444; margin-top:0.5rem;" onclick="handleAuth('register')">Register New Account</button>
+      <button class="btn-submit" style="background:#fff; margin-top:0.6rem;" onclick="handleAuth('register')">Register New Account</button>
     </div>
   `;
 }
@@ -137,7 +214,7 @@ async function handleAuth(type) {
 
   const res = await apiCall({ action: type, username, password });
   if (res.success) {
-    if (type === "register") showStatus("auth-status", res.message, true);
+    if (type === "register") showStatus("auth-status", res.message + " (If you were promoted to Transcriber/Editor before registering, log in again after any role change to pick it up.)", true);
     else {
       localStorage.setItem("lyrix_user", JSON.stringify(res.user));
       updateAuthUI();
@@ -145,6 +222,8 @@ async function handleAuth(type) {
     }
   } else showStatus("auth-status", res.message);
 }
+
+// ---------- add song ----------
 
 function renderAddSong(container) {
   const user = getUser();
@@ -163,7 +242,7 @@ function renderAddSong(container) {
       <div class="form-group" id="album-group"><label>Album / EP</label><input type="text" id="song-album"></div>
       <div class="form-group"><label>Cover Art</label><input type="file" id="song-cover" accept="image/*"></div>
       <div class="form-group"><label>Lyrics</label><textarea id="song-lyrics" rows="8"></textarea></div>
-      
+
       <h3>Audio Links</h3>
       <div class="form-group"><label>YouTube</label><input type="text" id="audio-youtube"></div>
       <div class="form-group"><label>Spotify</label><input type="text" id="audio-spotify"></div>
@@ -190,11 +269,13 @@ async function submitSong() {
   let coverBase64 = null;
   const fileInput = document.getElementById("song-cover");
   if (fileInput.files.length > 0) {
-    coverBase64 = await new Promise((res) => {
-      const reader = new FileReader();
-      reader.onload = () => res(reader.result);
-      reader.readAsDataURL(fileInput.files[0]);
-    });
+    try {
+      coverBase64 = await fileToCompressedBase64(fileInput.files[0]);
+    } catch (e) {
+      btn.disabled = false;
+      btn.innerText = "Publish Lyrics";
+      return showStatus("song-status", "Could not process that image.");
+    }
   }
 
   const audioLinks = {
@@ -219,9 +300,12 @@ async function submitSong() {
   if (res.success) navigateTo(`/song/${res.slug}`);
   else {
     btn.disabled = false;
+    btn.innerText = "Publish Lyrics";
     showStatus("song-status", res.message);
   }
 }
+
+// ---------- song detail ----------
 
 async function renderSongDetail(container, slug) {
   container.innerHTML = "<p>Loading...</p>";
@@ -241,35 +325,36 @@ async function renderSongDetail(container, slug) {
       <div id="song-edit-status" class="status-banner hidden"></div>
       <div class="song-detail">
         <div>
-          <img src="${s.coverUrl}" class="song-cover" alt="${s.title}">
-          <h1>${s.title} ${s.isComplete ? '✅' : ''}</h1>
-          <h3><a href="/artist/${s.artistSlug}" data-link style="color:var(--accent);">${s.artist}</a> ${s.album ? '• ' + s.album : ''}</h3>
-          <p style="font-size:0.85rem; color:#666;">Added by @${s.createdBy}</p>
+          ${coverHtml(s.coverUrl, s.title, "song-cover")}
+          <h1 style="margin-top:1rem;">${esc(s.title)} ${s.isComplete ? '✅' : ''}</h1>
+          <h3 style="font-weight:600; font-family:var(--font-body);"><a href="/artist/${s.artistSlug}" data-link style="color:var(--danger); text-decoration:none;">${esc(s.artist)}</a> ${s.album ? '• ' + esc(s.album) : ''}</h3>
+          <p style="font-size:0.85rem; color:var(--ink-dim);">Added by @${esc(s.createdBy)}</p>
 
           <div class="audio-links" style="margin-top:1rem;">
             <h4>Listen On:</h4>
-            ${Object.entries(s.audioLinks).map(([k, v]) => v ? `<a href="${v}" target="_blank" class="badge">${k}</a> ` : '').join('')}
+            ${Object.entries(s.audioLinks).map(([k, v]) => v ? `<a href="${esc(v)}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>` : '').join('')}
           </div>
 
-          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#333; margin-top:1rem;">Edit Song</button>` : ''}
-          ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:#842029; margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#fff; margin-top:1rem;">Edit Song</button>` : ''}
+          ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:var(--danger); color:#fff; border-color:var(--danger); margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
         </div>
-        <div class="lyrics-box">${s.lyrics}</div>
+        <div class="lyrics-box">${esc(s.lyrics)}</div>
       </div>
 
       ${canEdit ? `
         <div id="edit-song-box" class="form-container hidden" style="margin-top:2rem;">
           <h3>Edit Song Information</h3>
-          <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${s.title}"></div>
-          <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${s.artist}"></div>
-          <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${s.lyrics}</textarea></div>
-          
+          <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
+          <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(s.artist)}"></div>
+          <div class="form-group"><label>Cover Art (replace)</label><input type="file" id="edit-cover" accept="image/*"></div>
+          <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${esc(s.lyrics)}</textarea></div>
+
           <h4>Audio Links</h4>
-          <div class="form-group"><label>YouTube</label><input type="text" id="edit-youtube" value="${s.audioLinks.youtube || ''}"></div>
-          <div class="form-group"><label>Spotify</label><input type="text" id="edit-spotify" value="${s.audioLinks.spotify || ''}"></div>
-          <div class="form-group"><label>Apple Music</label><input type="text" id="edit-apple" value="${s.audioLinks.apple || ''}"></div>
-          <div class="form-group"><label>SoundCloud</label><input type="text" id="edit-soundcloud" value="${s.audioLinks.soundcloud || ''}"></div>
-          <div class="form-group"><label>Bandcamp</label><input type="text" id="edit-bandcamp" value="${s.audioLinks.bandcamp || ''}"></div>
+          <div class="form-group"><label>YouTube</label><input type="text" id="edit-youtube" value="${esc(s.audioLinks.youtube || '')}"></div>
+          <div class="form-group"><label>Spotify</label><input type="text" id="edit-spotify" value="${esc(s.audioLinks.spotify || '')}"></div>
+          <div class="form-group"><label>Apple Music</label><input type="text" id="edit-apple" value="${esc(s.audioLinks.apple || '')}"></div>
+          <div class="form-group"><label>SoundCloud</label><input type="text" id="edit-soundcloud" value="${esc(s.audioLinks.soundcloud || '')}"></div>
+          <div class="form-group"><label>Bandcamp</label><input type="text" id="edit-bandcamp" value="${esc(s.audioLinks.bandcamp || '')}"></div>
 
           ${isEditor ? `
             <div class="form-group" style="display:flex; align-items:center; gap:0.5rem; margin-top:1rem;">
@@ -286,6 +371,22 @@ async function renderSongDetail(container, slug) {
 
 async function saveSongEdit(songId) {
   const user = getUser();
+  const btn = event.target;
+  btn.disabled = true;
+  btn.innerText = "Saving...";
+
+  let coverBase64 = null;
+  const fileInput = document.getElementById("edit-cover");
+  if (fileInput && fileInput.files.length > 0) {
+    try {
+      coverBase64 = await fileToCompressedBase64(fileInput.files[0]);
+    } catch (e) {
+      btn.disabled = false;
+      btn.innerText = "Save Changes";
+      return showStatus("song-edit-status", "Could not process that image.");
+    }
+  }
+
   const audioLinks = {
     youtube: document.getElementById("edit-youtube").value,
     spotify: document.getElementById("edit-spotify").value,
@@ -302,11 +403,16 @@ async function saveSongEdit(songId) {
     artist: document.getElementById("edit-artist").value,
     lyrics: document.getElementById("edit-lyrics").value,
     audioLinks: audioLinks,
+    coverBase64,
     isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
   });
 
   if (res.success) navigateTo(`/song/${res.slug}`);
-  else showStatus("song-edit-status", res.message);
+  else {
+    btn.disabled = false;
+    btn.innerText = "Save Changes";
+    showStatus("song-edit-status", res.message);
+  }
 }
 
 async function deleteSong(songId) {
@@ -316,6 +422,8 @@ async function deleteSong(songId) {
   if (res.success) navigateTo("/");
   else showStatus("song-edit-status", res.message);
 }
+
+// ---------- artist detail ----------
 
 async function renderArtistDetail(container, slug) {
   container.innerHTML = "<p>Loading artist...</p>";
@@ -329,30 +437,32 @@ async function renderArtistDetail(container, slug) {
     container.innerHTML = `
       <div id="artist-status" class="status-banner hidden"></div>
       <div style="display:flex; gap:2rem; align-items:center; flex-wrap:wrap;">
-        <img src="${a.pfpUrl}" style="width:150px; height:150px; border-radius:50%; object-fit:cover;">
+        ${a.pfpUrl
+          ? `<img src="${esc(a.pfpUrl)}" style="width:150px; height:150px; border-radius:50%; object-fit:cover; border:2px solid var(--ink);">`
+          : `<div class="cover-fallback" style="width:150px; height:150px; border-radius:50%; font-size:2.4rem;">${esc(initials(a.name))}</div>`}
         <div>
-          <h1>${a.name}</h1>
-          ${a.akas ? `<p style="color:var(--text-dim);">AKA: ${a.akas}</p>` : ''}
-          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#333;">Edit Artist Profile</button>` : ''}
+          <h1>${esc(a.name)}</h1>
+          ${a.akas ? `<p style="color:var(--ink-dim);">AKA: ${esc(a.akas)}</p>` : ''}
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#fff;">Edit Artist Profile</button>` : ''}
         </div>
       </div>
 
-      <h3 style="margin-top:2rem;">Songs by ${a.name}</h3>
+      <h2 class="section-title">Songs by ${esc(a.name)}</h2>
       <div class="grid">
         ${a.songs.length > 0 ? a.songs.map(s => `
           <a href="/song/${s.slug}" data-link class="card">
-            <img src="${s.coverUrl}">
+            ${coverHtml(s.coverUrl, s.title)}
             <div class="card-info">
-              <div class="card-title">${s.title}</div>
+              <div class="card-title">${esc(s.title)}</div>
             </div>
           </a>
-        `).join('') : '<p>No songs found for this artist.</p>'}
+        `).join('') : '<p class="empty-state">No songs found for this artist.</p>'}
       </div>
 
       ${canEdit ? `
         <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
           <h3>Edit Profile Information</h3>
-          <div class="form-group"><label>AKAs</label><input type="text" id="artist-akas" value="${a.akas}"></div>
+          <div class="form-group"><label>AKAs</label><input type="text" id="artist-akas" value="${esc(a.akas)}"></div>
           <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
           <button class="btn-submit" onclick="saveArtistEdit('${a.slug}')">Save Profile</button>
         </div>
@@ -366,11 +476,11 @@ async function saveArtistEdit(slug) {
   let pfpBase64 = null;
   const fileInput = document.getElementById("artist-pfp");
   if (fileInput.files.length > 0) {
-    pfpBase64 = await new Promise((res) => {
-      const reader = new FileReader();
-      reader.onload = () => res(reader.result);
-      reader.readAsDataURL(fileInput.files[0]);
-    });
+    try {
+      pfpBase64 = await fileToCompressedBase64(fileInput.files[0], 500, 0.85);
+    } catch (e) {
+      return showStatus("artist-status", "Could not process that image.");
+    }
   }
 
   const res = await apiCall({
