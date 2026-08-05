@@ -1,4 +1,18 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbwj-0Rl77sljgV6lwlfZWTUcReinclQvNcQ9b6yoIPKwdgqFXBjUSGtlTp6UKfIPhe9/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbzX2yNyc4-1Oblx1qi8xNNdqi9gGwpCOu6Vz0qOpuXKdncfqpabvzY4meujiQ9t8-ZS/exec"; // Paste your Web App URL here
+
+// Optional: once you've set GITHUB_TOKEN / GITHUB_REPO in the Apps Script's
+// Script Properties, paste the raw file URL here (e.g.
+// "https://raw.githubusercontent.com/USERNAME/REPO/main/lyrix-data.json").
+// When set, all browsing (home, song pages, artist pages) reads from this
+// static file instead of Apps Script, which is dramatically faster and
+// doesn't depend on Apps Script being fast or even reachable. Leave blank
+// to keep using Apps Script directly for reads — everything still works,
+// just slower.
+const DATA_URL = "";
+
+let dataCache = null;
+let dataCacheAt = 0;
+const DATA_CACHE_MS = 15000;
 
 window.addEventListener("popstate", router);
 
@@ -19,13 +33,66 @@ function navigateTo(url) {
   router();
 }
 
-async function apiCall(data) {
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(data)
-  });
-  return await response.json();
+// Always resolves — never throws and never hangs forever. A network error,
+// a timeout, or a non-JSON response (e.g. Apps Script serving a Google
+// sign-in page because the deployment isn't set to "Anyone can access")
+// all come back as { success:false, message }, so callers' existing
+// if(res.success)/else logic just works instead of leaving a button stuck
+// on "Publishing..." with no feedback.
+async function apiCall(data, timeoutMs = 25000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(data),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      return { success: false, message: "The server didn't return valid data. Double-check the Apps Script deployment is set to \"Execute as: Me\" / \"Who has access: Anyone\", and redeploy (New deployment) after any code change." };
+    }
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { success: false, message: "Request timed out after " + Math.round(timeoutMs / 1000) + "s. The backend may be slow or unreachable — try again in a moment." };
+    }
+    return { success: false, message: "Network error reaching the backend: " + err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Fetches the CDN-hosted snapshot (if DATA_URL is configured). Cached in
+// memory for DATA_CACHE_MS so navigating between pages doesn't refetch.
+// Returns null (never throws) if unset or unreachable, so callers can
+// fall back to apiCall.
+async function getData(forceFresh = false) {
+  if (!DATA_URL) return null;
+  if (!forceFresh && dataCache && (Date.now() - dataCacheAt < DATA_CACHE_MS)) return dataCache;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const sep = DATA_URL.includes("?") ? "&" : "?";
+    const res = await fetch(DATA_URL + sep + "t=" + Date.now(), { cache: "no-store", signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json || !Array.isArray(json.songs)) return null;
+    dataCache = json;
+    dataCacheAt = Date.now();
+    return json;
+  } catch (e) {
+    return null;
+  }
+}
+
+function normalizeText(s) {
+  return (s || "").toString().trim().toLowerCase();
 }
 
 // ---------- small utils ----------
@@ -162,12 +229,30 @@ async function renderHome(container, query = "") {
     <div class="grid" id="song-grid">Loading...</div>
   `;
 
-  const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
   const grid = document.getElementById("song-grid");
   const artistRow = document.getElementById("artist-row");
 
-  if (res.success && res.songs.length > 0) {
-    grid.innerHTML = res.songs.map(song => `
+  let songs = null, artists = null, errorMessage = null;
+
+  const snapshot = await getData();
+  if (snapshot) {
+    const terms = normalizeText(query).split(/\s+/).filter(Boolean);
+    songs = snapshot.songs
+      .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + s.artist + " " + (s.album || "")).includes(t)))
+      .slice(0, 24);
+    artists = snapshot.artists.slice(0, 12);
+  } else {
+    const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
+    if (res.success) {
+      songs = res.songs;
+      artists = res.artists;
+    } else {
+      errorMessage = res.message;
+    }
+  }
+
+  if (songs && songs.length > 0) {
+    grid.innerHTML = songs.map(song => `
       <a href="/song/${song.slug}" data-link class="card">
         ${coverHtml(song.coverUrl, song.title)}
         <div class="card-info">
@@ -176,17 +261,21 @@ async function renderHome(container, query = "") {
         </div>
       </a>
     `).join("");
+  } else if (errorMessage) {
+    grid.innerHTML = `<p class="empty-state">Couldn't load songs: ${esc(errorMessage)}</p>`;
   } else {
     grid.innerHTML = `<p class="empty-state">No matching songs found.</p>`;
   }
 
-  if (res.success && res.artists && res.artists.length > 0) {
-    artistRow.innerHTML = res.artists.map(a => `
+  if (artists && artists.length > 0) {
+    artistRow.innerHTML = artists.map(a => `
       <a href="/artist/${a.slug}" data-link class="artist-chip">
         ${avatarHtml(a.pfpUrl, a.name)}
         <div class="artist-chip-name">${esc(a.name)}</div>
       </a>
     `).join("");
+  } else if (errorMessage) {
+    artistRow.innerHTML = `<p class="empty-state">Couldn't load artists.</p>`;
   } else {
     artistRow.innerHTML = `<p class="empty-state">No artist pages yet.</p>`;
   }
@@ -309,10 +398,19 @@ async function submitSong() {
 
 async function renderSongDetail(container, slug) {
   container.innerHTML = "<p>Loading...</p>";
-  const res = await apiCall({ action: "getSong", slug });
 
-  if (res.success) {
-    const s = res.song;
+  let s = null, errorMessage = null;
+  const snapshot = await getData();
+  if (snapshot) s = snapshot.songs.find(song => song.slug === slug) || null;
+
+  // Falls back to a live lookup if not in the snapshot yet (e.g. it was
+  // just added and the CDN copy hasn't caught up) or if no CDN is configured.
+  if (!s) {
+    const res = await apiCall({ action: "getSong", slug });
+    if (res.success) s = res.song; else errorMessage = res.message;
+  }
+
+  if (s) {
     const user = getUser();
     const isEditor = user && user.isEditor;
     const isTranscriber = user && user.isTranscriber;
@@ -366,7 +464,9 @@ async function renderSongDetail(container, slug) {
         </div>
       ` : ''}
     `;
-  } else container.innerHTML = "<h2>Song not found</h2>";
+  } else {
+    container.innerHTML = errorMessage ? `<h2>Couldn't load this song</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Song not found</h2>";
+  }
 }
 
 async function saveSongEdit(songId) {
@@ -427,10 +527,22 @@ async function deleteSong(songId) {
 
 async function renderArtistDetail(container, slug) {
   container.innerHTML = "<p>Loading artist...</p>";
-  const res = await apiCall({ action: "getArtist", slug });
 
-  if (res.success) {
-    const a = res.artist;
+  let a = null, errorMessage = null;
+  const snapshot = await getData();
+  if (snapshot) {
+    const artistMeta = snapshot.artists.find(ar => ar.slug === slug) || null;
+    const songs = snapshot.songs.filter(s => s.artistSlug === slug).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
+    if (artistMeta) a = Object.assign({}, artistMeta, { songs });
+    else if (songs.length > 0) a = { slug, name: songs[0] ? snapshot.songs.find(s => s.artistSlug === slug).artist : slug, pfpUrl: "", akas: "", songs };
+  }
+
+  if (!a) {
+    const res = await apiCall({ action: "getArtist", slug });
+    if (res.success) a = res.artist; else errorMessage = res.message;
+  }
+
+  if (a) {
     const user = getUser();
     const canEdit = user && (user.isEditor || user.username === a.createdBy);
 
@@ -468,7 +580,9 @@ async function renderArtistDetail(container, slug) {
         </div>
       ` : ''}
     `;
-  } else container.innerHTML = "<h2>Artist not found</h2>";
+  } else {
+    container.innerHTML = errorMessage ? `<h2>Couldn't load this artist</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Artist not found</h2>";
+  }
 }
 
 async function saveArtistEdit(slug) {
