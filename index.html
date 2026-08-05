@@ -4,20 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LyriX - Community Lyrics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header>
     <div class="nav-container">
-      <a href="/" class="logo">LyriX</a>
+      <a href="/" class="logo" data-link>LyriX</a>
       <div class="search-box">
         <input type="text" id="search-input" placeholder="Search songs or artists..." onkeydown="if(event.key==='Enter') doSearch()">
         <button onclick="doSearch()">Search</button>
       </div>
       <nav id="nav-links">
-        <a href="/">Home</a>
-        <a href="/add" id="add-link" class="hidden">Add Lyrics</a>
-        <a href="/login" id="login-btn">Login / Register</a>
+        <a href="/" data-link>Home</a>
+        <a href="/add" id="add-link" class="hidden" data-link>Add Lyrics</a>
+        <a href="/login" id="login-btn" data-link>Login / Register</a>
         <span id="user-display" class="hidden"></span>
         <button id="logout-btn" class="hidden" onclick="logout()">Logout</button>
       </nav>
