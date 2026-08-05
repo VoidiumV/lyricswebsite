@@ -8,7 +8,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbzX2yNyc4-1Oblx1qi8xNNd
 // doesn't depend on Apps Script being fast or even reachable. Leave blank
 // to keep using Apps Script directly for reads — everything still works,
 // just slower.
-const DATA_URL = "";
+const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
 let dataCacheAt = 0;
