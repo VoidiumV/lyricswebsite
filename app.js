@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbwpFgj1DEWyu3mn3dX-TXHbbJwUOyVVjnYkCE-WnV-mLeagTfwVzDoqP4NV7RuK0ZMK/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycby_UurT_bZGzYu1DFS0K9WrfeFoqrDWkVTABs3byn4rR_O2kBrIxS_Ii6ttpoM55C6a/exec"; // Paste your Web App URL here
 
 // Optional: once you've set GITHUB_TOKEN / GITHUB_REPO in the Apps Script's
 // Script Properties, paste the raw file URL here (e.g.
