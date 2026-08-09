@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycby_UurT_bZGzYu1DFS0K9WrfeFoqrDWkVTABs3byn4rR_O2kBrIxS_Ii6ttpoM55C6a/exec"; // Paste your Web App URL here
+const API_URL = "https://script.google.com/macros/s/AKfycbw3kAKTIbziQAP0BuP5TLyHIgxr7_z4iOu6Kb7kIB6W-34Hd3kYFzxseQc5P94xWa1s/exec"; // Paste your Web App URL here
 
 // Optional: once you've set GITHUB_TOKEN / GITHUB_REPO in the Apps Script's
 // Script Properties, paste the raw file URL here (e.g.
@@ -95,6 +95,17 @@ function normalizeText(s) {
   return (s || "").toString().trim().toLowerCase();
 }
 
+// Matches the backend's slugify exactly, so client-side AKA-slug matching
+// (used for the /artist/<aka> redirect) lines up with server-generated slugs.
+function slugify(text) {
+  return text ? text.toString().toLowerCase().trim().replace(/[\s\W-]+/g, '-') : '';
+}
+
+// Splits a free-text AKA field ("DPS, Daddy P") into individual trimmed names.
+function splitAkas(akasStr) {
+  return (akasStr || "").toString().split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+}
+
 // ---------- small utils ----------
 
 function esc(str) {
@@ -115,6 +126,43 @@ function coverHtml(url, label, cls) {
 function avatarHtml(url, label) {
   if (url) return `<img src="${esc(url)}" alt="${esc(label)}" loading="lazy">`;
   return `<div class="avatar-fallback">${esc(initials(label))}</div>`;
+}
+
+// ---------- audio embeds ----------
+// Turns a raw link into an inline player where we can reliably derive an
+// embed URL, and falls back to a plain "open in new tab" badge otherwise
+// (Bandcamp needs a per-track embed code we don't have from a plain URL,
+// so it always falls back).
+
+function linkFallback(platform, url) {
+  return `<a href="${esc(url)}" target="_blank" rel="noopener" class="badge">${esc(platform)}</a>`;
+}
+
+function embedHtml(platform, url) {
+  if (!url) return "";
+  try {
+    if (platform === "youtube") {
+      const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{6,})/);
+      if (!m) return linkFallback(platform, url);
+      return `<div class="embed-wrap embed-video"><iframe src="https://www.youtube.com/embed/${m[1]}" title="YouTube player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+    }
+    if (platform === "spotify") {
+      const m = url.match(/open\.spotify\.com\/(track|album|playlist|episode|show)\/([a-zA-Z0-9]+)/);
+      if (!m) return linkFallback(platform, url);
+      return `<div class="embed-wrap embed-compact" style="height:152px;"><iframe src="https://open.spotify.com/embed/${m[1]}/${m[2]}" title="Spotify player" allow="encrypted-media" loading="lazy"></iframe></div>`;
+    }
+    if (platform === "apple") {
+      const m = url.match(/music\.apple\.com\/(.+)/);
+      if (!m) return linkFallback(platform, url);
+      return `<div class="embed-wrap embed-compact" style="height:175px;"><iframe src="https://embed.music.apple.com/${m[1]}" title="Apple Music player" allow="autoplay *; encrypted-media *;" loading="lazy"></iframe></div>`;
+    }
+    if (platform === "soundcloud") {
+      return `<div class="embed-wrap embed-compact" style="height:166px;"><iframe src="https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23ff5500&auto_play=false&show_teaser=false" title="SoundCloud player" loading="lazy"></iframe></div>`;
+    }
+    return linkFallback(platform, url);
+  } catch (e) {
+    return linkFallback(platform, url);
+  }
 }
 
 // Resizes + compresses an image client-side before it's base64-encoded and
@@ -237,8 +285,14 @@ async function renderHome(container, query = "") {
   const snapshot = await getData();
   if (snapshot) {
     const terms = normalizeText(query).split(/\s+/).filter(Boolean);
+    // Map artistSlug -> searchable text (name's own AKAs), so a song matches
+    // a query typed against the artist's AKA even though the song object
+    // itself only carries the artist's primary name.
+    const akaTextBySlug = {};
+    (snapshot.artists || []).forEach(a => { akaTextBySlug[a.slug] = normalizeText(a.name + " " + (a.akas || "")); });
+
     songs = snapshot.songs
-      .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + s.artist + " " + (s.album || "")).includes(t)))
+      .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || s.artist)).includes(t)))
       .slice(0, 24);
     artists = snapshot.artists.slice(0, 12);
   } else {
@@ -418,6 +472,7 @@ async function renderSongDetail(container, slug) {
 
     // Transcribers, Editors, and creators can edit (unless locked complete)
     const canEdit = isEditor || isTranscriber || (isCreator && !s.isComplete);
+    const audioEntries = Object.entries(s.audioLinks || {}).filter(([, v]) => v);
 
     container.innerHTML = `
       <div id="song-edit-status" class="status-banner hidden"></div>
@@ -428,10 +483,12 @@ async function renderSongDetail(container, slug) {
           <h3 style="font-weight:600; font-family:var(--font-body);"><a href="/artist/${s.artistSlug}" data-link style="color:var(--danger); text-decoration:none;">${esc(s.artist)}</a> ${s.album ? '• ' + esc(s.album) : ''}</h3>
           <p style="font-size:0.85rem; color:var(--ink-dim);">Added by @${esc(s.createdBy)}</p>
 
-          <div class="audio-links" style="margin-top:1rem;">
-            <h4>Listen On:</h4>
-            ${Object.entries(s.audioLinks).map(([k, v]) => v ? `<a href="${esc(v)}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>` : '').join('')}
-          </div>
+          ${audioEntries.length > 0 ? `
+            <div class="audio-links" style="margin-top:1rem;">
+              <h4>Listen:</h4>
+              ${audioEntries.map(([k, v]) => embedHtml(k, v)).join('')}
+            </div>
+          ` : ''}
 
           ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#fff; margin-top:1rem;">Edit Song</button>` : ''}
           ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:var(--danger); color:#fff; border-color:var(--danger); margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
@@ -440,7 +497,8 @@ async function renderSongDetail(container, slug) {
       </div>
 
       ${canEdit ? `
-        <div id="edit-song-box" class="form-container hidden" style="margin-top:2rem;">
+        <div id="edit-song-box" class="form-container floating-panel hidden">
+          <button type="button" class="panel-close" onclick="document.getElementById('edit-song-box').classList.add('hidden')" aria-label="Close">×</button>
           <h3>Edit Song Information</h3>
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
           <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(s.artist)}"></div>
@@ -528,13 +586,34 @@ async function deleteSong(songId) {
 async function renderArtistDetail(container, slug) {
   container.innerHTML = "<p>Loading artist...</p>";
 
-  let a = null, errorMessage = null;
   const snapshot = await getData();
+  let allArtists = snapshot ? snapshot.artists : null;
+  if (!allArtists) {
+    const res = await apiCall({ action: "getArtists", limit: 999999 });
+    if (res.success) allArtists = res.artists;
+  }
+
+  // AKA redirect: "/artist/dps" should land on the canonical "/artist/daddyphatsnaps"
+  // page. If the requested slug isn't anyone's primary slug but matches a
+  // slugified AKA, swap the URL (without adding a history entry) and
+  // continue rendering under the canonical slug.
+  if (allArtists) {
+    const isDirectMatch = allArtists.some(a => a.slug === slug);
+    if (!isDirectMatch) {
+      const akaMatch = allArtists.find(a => splitAkas(a.akas).some(aka => slugify(aka) === slug));
+      if (akaMatch) {
+        history.replaceState(null, null, `/artist/${akaMatch.slug}`);
+        return renderArtistDetail(container, akaMatch.slug);
+      }
+    }
+  }
+
+  let a = null, errorMessage = null;
   if (snapshot) {
     const artistMeta = snapshot.artists.find(ar => ar.slug === slug) || null;
     const songs = snapshot.songs.filter(s => s.artistSlug === slug).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
-    if (artistMeta) a = Object.assign({}, artistMeta, { songs });
-    else if (songs.length > 0) a = { slug, name: songs[0] ? snapshot.songs.find(s => s.artistSlug === slug).artist : slug, pfpUrl: "", akas: "", songs };
+    if (artistMeta) a = Object.assign({ streamLinks: {} }, artistMeta, { songs });
+    else if (songs.length > 0) a = { slug, name: snapshot.songs.find(s => s.artistSlug === slug).artist, pfpUrl: "", akas: "", streamLinks: {}, songs };
   }
 
   if (!a) {
@@ -543,8 +622,11 @@ async function renderArtistDetail(container, slug) {
   }
 
   if (a) {
+    a.streamLinks = a.streamLinks || {};
     const user = getUser();
     const canEdit = user && (user.isEditor || user.username === a.createdBy);
+    const isEditor = user && user.isEditor;
+    const streamEntries = Object.entries(a.streamLinks).filter(([, v]) => v);
 
     container.innerHTML = `
       <div id="artist-status" class="status-banner hidden"></div>
@@ -555,7 +637,11 @@ async function renderArtistDetail(container, slug) {
         <div>
           <h1>${esc(a.name)}</h1>
           ${a.akas ? `<p style="color:var(--ink-dim);">AKA: ${esc(a.akas)}</p>` : ''}
-          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#fff;">Edit Artist Profile</button>` : ''}
+          ${streamEntries.length > 0 ? `<div style="margin-top:0.4rem;">${streamEntries.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>`).join('')}</div>` : ''}
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.6rem;">
+            ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#fff; width:auto; padding:0.6rem 1rem;">Edit Artist Profile</button>` : ''}
+            ${isEditor ? `<button class="btn-submit" onclick="deleteArtist('${a.slug}')" style="background:var(--danger); color:#fff; border-color:var(--danger); width:auto; padding:0.6rem 1rem;">Delete Artist Profile</button>` : ''}
+          </div>
         </div>
       </div>
 
@@ -574,8 +660,16 @@ async function renderArtistDetail(container, slug) {
       ${canEdit ? `
         <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
           <h3>Edit Profile Information</h3>
-          <div class="form-group"><label>AKAs</label><input type="text" id="artist-akas" value="${esc(a.akas)}"></div>
+          <div class="form-group"><label>AKAs (comma-separated)</label><input type="text" id="artist-akas" value="${esc(a.akas)}"></div>
           <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
+
+          <h4>Listen / Follow Links</h4>
+          <div class="form-group"><label>YouTube</label><input type="text" id="artist-youtube" value="${esc(a.streamLinks.youtube || '')}"></div>
+          <div class="form-group"><label>Spotify</label><input type="text" id="artist-spotify" value="${esc(a.streamLinks.spotify || '')}"></div>
+          <div class="form-group"><label>Apple Music</label><input type="text" id="artist-apple" value="${esc(a.streamLinks.apple || '')}"></div>
+          <div class="form-group"><label>SoundCloud</label><input type="text" id="artist-soundcloud" value="${esc(a.streamLinks.soundcloud || '')}"></div>
+          <div class="form-group"><label>Bandcamp</label><input type="text" id="artist-bandcamp" value="${esc(a.streamLinks.bandcamp || '')}"></div>
+
           <button class="btn-submit" onclick="saveArtistEdit('${a.slug}')">Save Profile</button>
         </div>
       ` : ''}
@@ -597,14 +691,31 @@ async function saveArtistEdit(slug) {
     }
   }
 
+  const streamLinks = {
+    youtube: document.getElementById("artist-youtube").value,
+    spotify: document.getElementById("artist-spotify").value,
+    apple: document.getElementById("artist-apple").value,
+    soundcloud: document.getElementById("artist-soundcloud").value,
+    bandcamp: document.getElementById("artist-bandcamp").value
+  };
+
   const res = await apiCall({
     action: "updateArtist",
     slug,
     username: user.username,
     akas: document.getElementById("artist-akas").value,
-    pfpBase64
+    pfpBase64,
+    streamLinks
   });
 
   if (res.success) navigateTo(`/artist/${slug}`);
+  else showStatus("artist-status", res.message);
+}
+
+async function deleteArtist(slug) {
+  if (!confirm("Delete this artist's profile permanently? Their songs will stay online, but the photo, AKAs, and links will be removed.")) return;
+  const user = getUser();
+  const res = await apiCall({ action: "deleteArtist", slug, username: user.username });
+  if (res.success) navigateTo("/");
   else showStatus("artist-status", res.message);
 }
