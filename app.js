@@ -1,9 +1,16 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbxf2WhbJlKSGZRv4MCpojn--FvEdsS40ZvxbUCkfw6sw60KJC3gBWAlg-SX4agpSVhY/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbxAf2psdIda1NgzQ_Fyd7OEuh4q_og4wi69B3G_g6W6EoJv_tVe1Q0JgoLp7jBZPxjU/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
 let dataCacheAt = 0;
 const DATA_CACHE_MS = 15000;
+
+// How many songs to render per row-group for the home page. This is just a
+// generous buffer so the CSS row-clamp (.grid-limit-4) always has enough
+// cards to fill 4 rows at any viewport width; the CSS is what actually
+// enforces "only 4 rows visible", not this number.
+const HOME_RECENT_BUFFER = 48;
+const SEARCH_RESULT_LIMIT = 24;
 
 window.addEventListener("popstate", router);
 
@@ -194,6 +201,50 @@ function embedHtml(platform, url) {
   }
 }
 
+// ---------- lyrics credit-tag colorization ----------
+//
+// Lets song submitters tag who's singing/rapping a given part inline in the
+// lyrics text using *name*, **name**, ***name*** (max 3 asterisks), or
+// <i>name</i> / <b>name</b>. At render time (song detail page only - NOT in
+// the raw edit textarea) each tagged name is rendered in its own color, with
+// no italics/bold applied and the markers themselves stripped from the
+// visible output. The same name always maps to the same color throughout a
+// given song.
+
+const LYRIC_COLORS = ["#B3261E", "#1F6FEB", "#1E8C4A", "#8C3FBF", "#BF6A1E", "#1E8C8C", "#BF1E7A", "#6B5B1E", "#3F4F8C", "#8C1E3F"];
+
+function colorizeLyrics(rawText) {
+  const text = (rawText || "").toString();
+  const colorMap = new Map();
+  let colorIdx = 0;
+
+  function colorFor(label) {
+    const key = label.trim().toLowerCase();
+    if (!colorMap.has(key)) {
+      colorMap.set(key, LYRIC_COLORS[colorIdx % LYRIC_COLORS.length]);
+      colorIdx++;
+    }
+    return colorMap.get(key);
+  }
+
+  // Order matters: triple-asterisk before double before single, so a run of
+  // "***" isn't partially swallowed by the double-asterisk alternative first.
+  const pattern = /<b>([\s\S]*?)<\/b>|<i>([\s\S]*?)<\/i>|\*\*\*([\s\S]*?)\*\*\*|\*\*([\s\S]*?)\*\*|\*([\s\S]*?)\*/g;
+
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = pattern.exec(text)) !== null) {
+    result += esc(text.slice(lastIndex, m.index));
+    const label = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? "";
+    const color = colorFor(label);
+    result += `<span style="color:${color};">${esc(label)}</span>`;
+    lastIndex = pattern.lastIndex;
+  }
+  result += esc(text.slice(lastIndex));
+  return result;
+}
+
 function fileToCompressedBase64(file, maxDim = 900, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -239,18 +290,19 @@ function updateAuthUI() {
   const loginBtn = document.getElementById("login-btn");
   const logoutBtn = document.getElementById("logout-btn");
   const addLink = document.getElementById("add-link");
-  const settingsLink = document.getElementById("settings-link");
+  const ownerLink = document.getElementById("owner-link");
   const userDisplay = document.getElementById("user-display");
 
   if (user) {
     if (loginBtn) loginBtn.classList.add("hidden");
     if (logoutBtn) logoutBtn.classList.remove("hidden");
     if (addLink) addLink.classList.remove("hidden");
-    if (settingsLink) settingsLink.classList.toggle("hidden", !user.isEditor);
+    if (ownerLink) ownerLink.classList.toggle("hidden", !user.isOwner);
     if (userDisplay) {
       userDisplay.classList.remove("hidden");
       let roleTag = "";
-      if (user.isEditor) roleTag = " (Editor)";
+      if (user.isOwner) roleTag = " (Owner)";
+      else if (user.isEditor) roleTag = " (Editor)";
       else if (user.isTranscriber) roleTag = " (Transcriber)";
       userDisplay.innerText = `@${user.username}${roleTag} · ${user.points || 0} pts`;
     }
@@ -258,7 +310,7 @@ function updateAuthUI() {
     if (loginBtn) loginBtn.classList.remove("hidden");
     if (logoutBtn) logoutBtn.classList.add("hidden");
     if (addLink) addLink.classList.add("hidden");
-    if (settingsLink) settingsLink.classList.add("hidden");
+    if (ownerLink) ownerLink.classList.add("hidden");
     if (userDisplay) userDisplay.classList.add("hidden");
   }
 }
@@ -293,10 +345,8 @@ async function router() {
     renderLogin(app);
   } else if (path === "/add") {
     renderAddSong(app);
-  } else if (path === "/leaderboard") {
-    renderLeaderboard(app);
-  } else if (path === "/settings") {
-    renderSettingsPage(app);
+  } else if (path === "/owner") {
+    renderOwnerPage(app);
   } else if (path.startsWith("/song/")) {
     renderSongDetail(app, path.replace("/song/", ""));
   } else if (path.startsWith("/artist/")) {
@@ -322,10 +372,18 @@ async function renderHome(container, query = "") {
     <div class="artist-row" id="artist-row">Loading...</div>
     <h2 class="section-title">${query ? `Results for "${esc(query)}"` : "Recently Added"}</h2>
     <div class="grid" id="song-grid">Loading...</div>
+    <h2 class="section-title">Leaderboard</h2>
+    <div id="home-leaderboard">Loading...</div>
   `;
 
   const grid = document.getElementById("song-grid");
   const artistRow = document.getElementById("artist-row");
+  const isSearching = !!(query && query.trim());
+  const songLimit = isSearching ? SEARCH_RESULT_LIMIT : HOME_RECENT_BUFFER;
+
+  // Kick the leaderboard fetch off in parallel; it doesn't block the rest
+  // of the page from rendering.
+  loadHomeLeaderboard(document.getElementById("home-leaderboard"));
 
   let songs = null, artists = null, errorMessage = null;
 
@@ -340,13 +398,13 @@ async function renderHome(container, query = "") {
 
     songs = snapshot.songs
       .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || cleanArtist(s.artist))).includes(t)))
-      .slice(0, 24);
+      .slice(0, songLimit);
 
     artists = expandedArtists
       .filter(a => terms.length === 0 || terms.every(t => normalizeText(cleanArtist(a.name) + " " + (a.akas || "")).includes(t)))
       .slice(0, 12);
   } else {
-    const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
+    const res = await apiCall({ action: "getHome", q: query || "", limit: songLimit });
     if (res.success) {
       songs = res.songs;
       artists = res.artists;
@@ -354,6 +412,10 @@ async function renderHome(container, query = "") {
       errorMessage = res.message;
     }
   }
+
+  // Only clamp to 4 visible rows for the default "Recently Added" listing;
+  // search results show in full.
+  grid.classList.toggle("grid-limit-4", !isSearching);
 
   if (songs && songs.length > 0) {
     grid.innerHTML = songs.map(song => `
@@ -407,7 +469,7 @@ async function handleAuth(type) {
 
   const res = await apiCall({ action: type, username, password });
   if (res.success) {
-    if (type === "register") showStatus("auth-status", res.message + " (If you were promoted to Transcriber/Editor before registering, log in again after any role change to pick it up.)", true);
+    if (type === "register") showStatus("auth-status", res.message + " (If you were promoted to Transcriber/Editor/Owner before registering, log in again after any role change to pick it up.)", true);
     else {
       localStorage.setItem("lyrix_user", JSON.stringify(res.user));
       updateAuthUI();
@@ -434,7 +496,13 @@ function renderAddSong(container) {
       </div>
       <div class="form-group" id="album-group"><label>Album / EP</label><input type="text" id="song-album"></div>
       <div class="form-group"><label>Cover Art</label><input type="file" id="song-cover" accept="image/*"></div>
-      <div class="form-group"><label>Lyrics</label><textarea id="song-lyrics" rows="8"></textarea></div>
+      <div class="form-group">
+        <label>Lyrics (paste text, or a single Google Doc link)</label>
+        <textarea id="song-lyrics" rows="8"></textarea>
+        <p style="font-size:0.78rem; color:var(--ink-dim); margin-top:0.4rem;">
+          Tag credits like [Verse: *Name*, **Name**, ***Name***, &lt;i&gt;Name&lt;/i&gt;, &lt;b&gt;Name&lt;/b&gt;] — each tagged name gets its own color on the song page (no italics/bold), and the markers themselves won't be shown.
+        </p>
+      </div>
 
       <h3>Audio Links</h3>
       <div class="form-group"><label>YouTube</label><input type="text" id="audio-youtube" placeholder="https://..."></div>
@@ -545,7 +613,7 @@ async function renderSongDetail(container, slug) {
           ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#fff; margin-top:1rem;">Edit Song</button>` : ''}
           ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:var(--danger); color:#fff; border-color:var(--danger); margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
         </div>
-        <div class="lyrics-box">${esc(s.lyrics)}</div>
+        <div class="lyrics-box">${colorizeLyrics(s.lyrics)}</div>
       </div>
 
       ${canEdit ? `
@@ -555,7 +623,13 @@ async function renderSongDetail(container, slug) {
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
           <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(cleanArtist(s.artist))}"></div>
           <div class="form-group"><label>Cover Art (replace)</label><input type="file" id="edit-cover" accept="image/*"></div>
-          <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${esc(s.lyrics)}</textarea></div>
+          <div class="form-group">
+            <label>Lyrics (paste text, or a single Google Doc link)</label>
+            <textarea id="edit-lyrics" rows="8">${esc(s.lyrics)}</textarea>
+            <p style="font-size:0.78rem; color:var(--ink-dim); margin-top:0.4rem;">
+              Tag credits like *Name*, **Name**, ***Name***, &lt;i&gt;Name&lt;/i&gt;, &lt;b&gt;Name&lt;/b&gt; for automatic color-coding.
+            </p>
+          </div>
 
           <h4>Audio Links</h4>
           <div class="form-group"><label>YouTube</label><input type="text" id="edit-youtube" value="${esc(s.audioLinks.youtube || '')}"></div>
@@ -714,6 +788,9 @@ async function renderArtistDetail(container, slug) {
         `).join('') : '<p class="empty-state">No songs found for this artist.</p>'}
       </div>
 
+      <h2 class="section-title">Top Contributors</h2>
+      <div id="artist-leaderboard">Loading...</div>
+
       ${canEdit ? `
         <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
           <h3>Edit Profile Information</h3>
@@ -731,6 +808,8 @@ async function renderArtistDetail(container, slug) {
         </div>
       ` : ''}
     `;
+
+    loadArtistLeaderboard(a.slug, document.getElementById("artist-leaderboard"));
   } else {
     container.innerHTML = errorMessage ? `<h2>Couldn't load this artist</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Artist not found</h2>";
   }
@@ -779,23 +858,23 @@ async function deleteArtist(slug) {
   else showStatus("artist-status", res.message);
 }
 
-// ---------- leaderboard ----------
+// ---------- leaderboards ----------
 
-async function renderLeaderboard(container) {
-  container.innerHTML = `<h2 class="section-title">Leaderboard</h2><div id="leaderboard-list">Loading...</div>`;
+// Global leaderboard, rendered inline at the bottom of the home page.
+async function loadHomeLeaderboard(container) {
+  if (!container) return;
   const res = await apiCall({ action: "getLeaderboard", limit: 50 });
-  const list = document.getElementById("leaderboard-list");
 
   if (!res.success || !res.leaderboard || res.leaderboard.length === 0) {
-    list.innerHTML = `<p class="empty-state">${esc(res.message || "No contributors yet.")}</p>`;
+    container.innerHTML = `<p class="empty-state">${esc(res.message || "No contributors yet.")}</p>`;
     return;
   }
 
-  list.innerHTML = `
+  container.innerHTML = `
     <div class="form-container" style="max-width:600px;">
       ${res.leaderboard.map((u, i) => `
         <div style="display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0; border-bottom:1px solid var(--line);">
-          <span><strong>#${i + 1}</strong> &nbsp; @${esc(u.username)} ${u.isEditor ? '<span class="badge">Editor</span>' : (u.isTranscriber ? '<span class="badge">Transcriber</span>' : '')}</span>
+          <span><strong>#${i + 1}</strong> &nbsp; @${esc(u.username)} ${u.isOwner ? '<span class="badge">Owner</span>' : (u.isEditor ? '<span class="badge">Editor</span>' : (u.isTranscriber ? '<span class="badge">Transcriber</span>' : ''))}</span>
           <span style="font-weight:700;">${u.points} pts</span>
         </div>
       `).join("")}
@@ -803,25 +882,49 @@ async function renderLeaderboard(container) {
   `;
 }
 
-// ---------- settings (editor-only point values) ----------
+// Per-artist leaderboard, rendered on each artist's page. Shows the users
+// who've earned the most points contributing specifically to that artist
+// (adding their songs, cover art, the artist page itself, its pfp).
+async function loadArtistLeaderboard(slug, container) {
+  if (!container) return;
+  const res = await apiCall({ action: "getArtistLeaderboard", slug, limit: 10 });
 
-async function renderSettingsPage(container) {
-  const user = getUser();
-  if (!user || !user.isEditor) {
-    container.innerHTML = `<h2>Settings</h2><p class="empty-state">Editor access required.</p>`;
+  if (!res.success || !res.leaderboard || res.leaderboard.length === 0) {
+    container.innerHTML = `<p class="empty-state">No contributions yet.</p>`;
     return;
   }
 
-  container.innerHTML = `<div class="form-container"><h2>Point Settings</h2><p style="color:var(--ink-dim); font-size:0.9rem;">Loading...</p></div>`;
+  container.innerHTML = `
+    <div class="form-container" style="max-width:600px;">
+      ${res.leaderboard.map((u, i) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0; border-bottom:1px solid var(--line);">
+          <span><strong>#${i + 1}</strong> &nbsp; @${esc(u.username)}</span>
+          <span style="font-weight:700;">${u.points} pts</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+// ---------- owner page (editor-only point settings now live here, owner-only access) ----------
+
+async function renderOwnerPage(container) {
+  const user = getUser();
+  if (!user || !user.isOwner) {
+    container.innerHTML = `<h2>Owner</h2><p class="empty-state">Owner access required.</p>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="form-container"><h2>Owner Panel</h2><p style="color:var(--ink-dim); font-size:0.9rem;">Loading...</p></div>`;
   const res = await apiCall({ action: "getSettings" });
   if (!res.success) {
-    container.innerHTML = `<h2>Settings</h2><p class="empty-state">${esc(res.message || "Couldn't load settings.")}</p>`;
+    container.innerHTML = `<h2>Owner Panel</h2><p class="empty-state">${esc(res.message || "Couldn't load settings.")}</p>`;
     return;
   }
 
   container.innerHTML = `
     <div class="form-container">
-      <h2>Point Settings</h2>
+      <h2>Owner Panel</h2>
       <p style="color:var(--ink-dim); font-size:0.85rem; margin-top:-0.6rem;">Points awarded to users for contributing.</p>
       <div id="settings-status" class="status-banner hidden"></div>
       ${Object.keys(res.settings).map(k => `
