@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbzftFiN0rPJU_p-GxvW8MikRGMYpdfJrYZ8G2BUCwAv8Rrce_RH8oB4Z0FOshV-AvA2/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbyMgHnHcELAy0PkSWXaeIEECsaV3WVjqOhFVq31ZnvW7Ku-wE6kdyN_Vp6oBbh9_WyN/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -139,6 +139,58 @@ function expandArtists(list) {
     });
   });
   return Array.from(seen.values());
+}
+
+// ---------- song relations (Remix, Sped Up, Cover, Sample, etc.) ----------
+
+const RELATION_TYPES = [
+  { value: "Remix", label: "Remix", phrase: "Remix of" },
+  { value: "Sped Up", label: "Sped Up", phrase: "Sped Up version of" },
+  { value: "Slowed Down", label: "Slowed Down / Nightcore", phrase: "Slowed Down version of" },
+  { value: "Cover", label: "Cover of", phrase: "Cover of" },
+  { value: "Sample", label: "Samples", phrase: "Samples" },
+  { value: "Acoustic", label: "Acoustic Version", phrase: "Acoustic version of" },
+  { value: "Live", label: "Live Version", phrase: "Live version of" },
+  { value: "Remaster", label: "Remaster of", phrase: "Remaster of" },
+  { value: "Other", label: "Other", phrase: "Related to" }
+];
+
+function relationTypeLabel(type) {
+  const entry = RELATION_TYPES.find(r => r.value === type);
+  return entry ? entry.phrase : (type || "Related to");
+}
+
+function relationOptionsHtml(selectedValue) {
+  return `<option value="" ${!selectedValue ? "selected" : ""}>None</option>` +
+    RELATION_TYPES.map(r => `<option value="${esc(r.value)}" ${selectedValue === r.value ? "selected" : ""}>${esc(r.label)}</option>`).join("");
+}
+
+// Maps "title — artist" (lowercase) -> slug, so the relation-target text
+// input (backed by a <datalist>) can resolve a typed/selected song to an
+// actual slug without a dedicated search endpoint. Populated fresh each
+// time a form that needs it is rendered.
+let songLookupMap = {};
+
+async function populateRelationDatalist() {
+  const dl = document.getElementById("relation-song-options");
+  if (!dl) return;
+  const snapshot = await getData();
+  let list = snapshot ? snapshot.songs : null;
+  if (!list) {
+    const res = await apiCall({ action: "getSongs", limit: 1000 });
+    list = res.success ? res.songs : [];
+  }
+  songLookupMap = {};
+  dl.innerHTML = list.map(s => {
+    const label = `${s.title} — ${cleanArtist(s.artist)}`;
+    songLookupMap[label.toLowerCase()] = s.slug;
+    return `<option value="${esc(label)}"></option>`;
+  }).join("");
+}
+
+function resolveRelationSlug(text) {
+  if (!text) return "";
+  return songLookupMap[text.trim().toLowerCase()] || "";
 }
 
 function esc(str) {
@@ -436,6 +488,8 @@ async function router() {
     renderSongDetail(app, path.replace("/song/", ""));
   } else if (path.startsWith("/artist/")) {
     renderArtistDetail(app, path.replace("/artist/", ""));
+  } else if (path.startsWith("/album/")) {
+    renderAlbumDetail(app, path.replace("/album/", ""));
   } else {
     app.innerHTML = "<h2>404 - Page Not Found</h2>";
   }
@@ -565,7 +619,7 @@ async function handleAuth(type) {
 
 // ---------- add song ----------
 
-function renderAddSong(container) {
+async function renderAddSong(container) {
   const user = getUser();
   if (!user) return navigateTo("/login");
 
@@ -583,6 +637,10 @@ function renderAddSong(container) {
         <label>Album(s) / EP(s)</label>
         <input type="text" id="song-album" placeholder="Separate multiple with comma, e.g. Album A, Album B">
       </div>
+      <div class="form-group">
+        <label>Track Number(s) <span style="font-weight:400; color:var(--ink-dim);">(matches album order above, comma-separated)</span></label>
+        <input type="text" id="song-track-numbers" placeholder="e.g. 3   or   3, 1">
+      </div>
       <div class="form-group"><label>Release Date</label><input type="date" id="song-release-date"></div>
       ${imageInputHtml("song-cover", "Cover Art")}
       <div class="form-group">
@@ -591,6 +649,18 @@ function renderAddSong(container) {
         <p style="font-size:0.78rem; color:var(--ink-dim); margin-top:0.4rem;">
           Tag credits like [Verse: *Name*, **Name**, ***Name***, &lt;i&gt;Name&lt;/i&gt;, &lt;b&gt;Name&lt;/b&gt;] — each tagged name gets its own color on the song page (no italics/bold), and the markers themselves won't be shown.
         </p>
+      </div>
+
+      <h3>Song Relation (optional)</h3>
+      <p style="font-size:0.78rem; color:var(--ink-dim); margin-top:-0.6rem;">Link this song to an original/related version — a remix, cover, sped up edit, sample, etc.</p>
+      <div class="form-group">
+        <label>Relation Type</label>
+        <select id="relation-type">${relationOptionsHtml("")}</select>
+      </div>
+      <div class="form-group">
+        <label>Original / Related Song</label>
+        <input type="text" id="relation-target" list="relation-song-options" placeholder="Start typing a song title...">
+        <datalist id="relation-song-options"></datalist>
       </div>
 
       <h3>Audio Links</h3>
@@ -603,6 +673,8 @@ function renderAddSong(container) {
       <button class="btn-submit" id="submit-song-btn" onclick="submitSong()">Publish Lyrics</button>
     </div>
   `;
+
+  populateRelationDatalist();
 }
 
 async function submitSong() {
@@ -631,16 +703,22 @@ async function submitSong() {
     bandcamp: document.getElementById("audio-bandcamp").value
   };
 
+  const relationTargetText = document.getElementById("relation-target").value.trim();
+
   const res = await apiCall({
     action: "addSong",
     username: user.username,
     title, artist,
     isSingle: document.getElementById("is-single").checked,
     album: document.getElementById("song-album").value,
+    trackNumbers: document.getElementById("song-track-numbers").value,
     releaseDate: document.getElementById("song-release-date").value,
     lyrics: document.getElementById("song-lyrics").value,
     coverBase64: coverResult.base64,
     coverImageUrl: coverResult.url,
+    relationType: document.getElementById("relation-type").value,
+    relationTarget: relationTargetText,
+    relationTargetSlug: resolveRelationSlug(relationTargetText),
     audioLinks
   });
 
@@ -680,9 +758,31 @@ async function renderSongDetail(container, slug) {
       .map(a => `<a href="/artist/${slugify(a)}" data-link style="color:var(--danger); text-decoration:none;">${esc(a)}</a>`)
       .join(" & ");
 
-    // A song can be released on more than one album/EP - the stored field
-    // is a comma/semicolon-separated list, split back out here for display.
-    const albumDisplay = splitAlbums(s.album).join(" • ");
+    // A song can be released on more than one album/EP - each entry links
+    // through to that album's own page.
+    const albumEntries = s.albumEntries || [];
+    const albumLinksHtml = albumEntries.map(al => `<a href="/album/${al.slug}" data-link style="color:inherit;">${esc(al.name)}</a>`).join(" • ");
+
+    // "This song is a Remix of X" - links to X if it resolves to a real
+    // song, otherwise just shows the typed name.
+    const relationHtml = (s.relationType && s.relationTarget) ? `
+      <p style="margin-top:0.6rem; font-size:0.92rem; color:var(--ink-dim);">
+        ${esc(relationTypeLabel(s.relationType))}
+        ${s.relationTargetSlug ? `<a href="/song/${s.relationTargetSlug}" data-link style="color:var(--danger); font-weight:600;">${esc(s.relationTarget)}</a>` : `<strong>${esc(s.relationTarget)}</strong>`}
+      </p>
+    ` : '';
+
+    // Reverse lookup: other songs (from the full snapshot, when available)
+    // that point back at this one - "Related Versions".
+    const relatedVersions = snapshot ? snapshot.songs.filter(other => other.relationTargetSlug && other.relationTargetSlug === s.slug && other.slug !== s.slug) : [];
+    const relatedVersionsHtml = relatedVersions.length > 0 ? `
+      <div style="margin-top:1.5rem;">
+        <h4>Related Versions</h4>
+        <div style="display:flex; flex-direction:column; gap:0.4rem;">
+          ${relatedVersions.map(rv => `<a href="/song/${rv.slug}" data-link style="color:var(--danger); text-decoration:none;">${esc(relationTypeLabel(rv.relationType))} — ${esc(rv.title)} (${esc(cleanArtist(rv.artist))})</a>`).join('')}
+        </div>
+      </div>
+    ` : '';
 
     container.innerHTML = `
       <div id="song-edit-status" class="status-banner hidden"></div>
@@ -690,8 +790,9 @@ async function renderSongDetail(container, slug) {
         <div>
           ${coverHtml(s.coverUrl, s.title, "song-cover")}
           <h1 style="margin-top:1rem;">${esc(s.title)} ${s.isComplete ? '✅' : ''}</h1>
-          <h3 style="font-weight:600; font-family:var(--font-body);">${artistLinks}${albumDisplay ? ' • ' + esc(albumDisplay) : ''}</h3>
+          <h3 style="font-weight:600; font-family:var(--font-body);">${artistLinks}${albumLinksHtml ? ' • ' + albumLinksHtml : ''}</h3>
           ${s.releaseDate ? `<p style="font-size:0.85rem; color:var(--ink-dim);">Released ${esc(formatReleaseDate(s.releaseDate))}</p>` : ''}
+          ${relationHtml}
 
           ${audioEntries.length > 0 ? `
             <div class="audio-links" style="margin-top:1rem;">
@@ -702,6 +803,8 @@ async function renderSongDetail(container, slug) {
 
           ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-song-box').classList.toggle('hidden')" style="background:#fff; margin-top:1rem;">Edit Song</button>` : ''}
           ${isEditor ? `<button class="btn-submit" onclick="deleteSong('${s.id}')" style="background:var(--danger); color:#fff; border-color:var(--danger); margin-top:0.5rem;">Delete Song Permanently</button>` : ''}
+
+          ${relatedVersionsHtml}
         </div>
         <div class="lyrics-box">${colorizeLyrics(s.lyrics)}</div>
       </div>
@@ -713,6 +816,10 @@ async function renderSongDetail(container, slug) {
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
           <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(cleanArtist(s.artist))}"></div>
           <div class="form-group"><label>Album(s) / EP(s)</label><input type="text" id="edit-album" value="${esc(s.album)}" placeholder="Separate multiple with comma"></div>
+          <div class="form-group">
+            <label>Track Number(s) <span style="font-weight:400; color:var(--ink-dim);">(matches album order above, comma-separated)</span></label>
+            <input type="text" id="edit-track-numbers" value="${esc(albumEntries.map(al => (s.trackNumbers && s.trackNumbers[al.slug] != null) ? s.trackNumbers[al.slug] : '').join(', '))}">
+          </div>
           <div class="form-group"><label>Release Date</label><input type="date" id="edit-release-date" value="${esc((s.releaseDate || "").toString().substring(0, 10))}"></div>
           ${imageInputHtml("edit-cover", "Cover Art (replace)", s.coverUrl)}
           <div class="form-group">
@@ -721,6 +828,17 @@ async function renderSongDetail(container, slug) {
             <p style="font-size:0.78rem; color:var(--ink-dim); margin-top:0.4rem;">
               Tag credits like *Name*, **Name**, ***Name***, &lt;i&gt;Name&lt;/i&gt;, &lt;b&gt;Name&lt;/b&gt; for automatic color-coding.
             </p>
+          </div>
+
+          <h4>Song Relation (optional)</h4>
+          <div class="form-group">
+            <label>Relation Type</label>
+            <select id="edit-relation-type">${relationOptionsHtml(s.relationType || "")}</select>
+          </div>
+          <div class="form-group">
+            <label>Original / Related Song</label>
+            <input type="text" id="edit-relation-target" list="relation-song-options" value="${esc(s.relationTarget || '')}">
+            <datalist id="relation-song-options"></datalist>
           </div>
 
           <h4>Audio Links</h4>
@@ -740,6 +858,8 @@ async function renderSongDetail(container, slug) {
         </div>
       ` : ''}
     `;
+
+    if (canEdit) populateRelationDatalist();
   } else {
     container.innerHTML = errorMessage ? `<h2>Couldn't load this song</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Song not found</h2>";
   }
@@ -766,6 +886,11 @@ async function saveSongEdit(songId) {
     bandcamp: document.getElementById("edit-bandcamp").value
   };
 
+  const editRelationTargetEl = document.getElementById("edit-relation-target");
+  const editRelationTypeEl = document.getElementById("edit-relation-type");
+  const editTrackNumbersEl = document.getElementById("edit-track-numbers");
+  const editRelationTargetText = editRelationTargetEl ? editRelationTargetEl.value.trim() : undefined;
+
   const res = await apiCall({
     action: "updateSong",
     id: songId,
@@ -773,11 +898,15 @@ async function saveSongEdit(songId) {
     title: document.getElementById("edit-title").value,
     artist: document.getElementById("edit-artist").value,
     album: document.getElementById("edit-album").value,
+    trackNumbers: editTrackNumbersEl ? editTrackNumbersEl.value : undefined,
     releaseDate: document.getElementById("edit-release-date").value,
     lyrics: document.getElementById("edit-lyrics").value,
     audioLinks: audioLinks,
     coverBase64: coverResult.base64,
     coverImageUrl: coverResult.url,
+    relationType: editRelationTypeEl ? editRelationTypeEl.value : undefined,
+    relationTarget: editRelationTargetText,
+    relationTargetSlug: editRelationTargetText !== undefined ? resolveRelationSlug(editRelationTargetText) : undefined,
     isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
   });
 
@@ -849,6 +978,26 @@ async function renderArtistDetail(container, slug) {
     const isEditor = user && user.isEditor;
     const streamEntries = Object.entries(a.streamLinks).filter(([, v]) => v && v.toString().trim());
 
+    // Albums by this artist (auto-created whenever a song names one).
+    let artistAlbums = [];
+    if (snapshot && snapshot.albums) {
+      artistAlbums = snapshot.albums.filter(al => al.artistSlug === a.slug);
+    } else {
+      const albumsRes = await apiCall({ action: "getAlbums", limit: 500 });
+      if (albumsRes.success) artistAlbums = albumsRes.albums.filter(al => al.artistSlug === a.slug);
+    }
+    const albumsRowHtml = artistAlbums.length > 0 ? `
+      <h2 class="section-title">Albums</h2>
+      <div class="artist-row">
+        ${artistAlbums.map(al => `
+          <a href="/album/${al.slug}" data-link class="artist-chip">
+            ${avatarHtml(al.coverUrl, al.name)}
+            <div class="artist-chip-name">${esc(al.name)}</div>
+          </a>
+        `).join('')}
+      </div>
+    ` : '';
+
     container.innerHTML = `
       <div id="artist-status" class="status-banner hidden"></div>
       <div style="display:flex; gap:2rem; align-items:center; flex-wrap:wrap;">
@@ -865,6 +1014,8 @@ async function renderArtistDetail(container, slug) {
           </div>
         </div>
       </div>
+
+      ${albumsRowHtml}
 
       <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; margin:2.5rem 0 1.1rem;">
         <h2 class="section-title" style="margin:0;">Songs by ${esc(cleanArtist(a.name))}</h2>
@@ -994,6 +1145,85 @@ async function deleteArtist(slug) {
   const res = await apiCall({ action: "deleteArtist", slug, username: user.username });
   if (res.success) navigateTo("/");
   else showStatus("artist-status", res.message);
+}
+
+// ---------- album detail ----------
+
+async function renderAlbumDetail(container, slug) {
+  container.innerHTML = "<p>Loading album...</p>";
+
+  const res = await apiCall({ action: "getAlbum", slug });
+  let alb = null, errorMessage = null;
+  if (res.success) alb = res.album; else errorMessage = res.message;
+
+  if (alb) {
+    const user = getUser();
+    const isEditor = user && user.isEditor;
+    const canEdit = user && (user.isEditor || user.username === alb.createdBy);
+
+    container.innerHTML = `
+      <div id="album-status" class="status-banner hidden"></div>
+      <div class="song-detail">
+        <div>
+          ${coverHtml(alb.coverUrl, alb.name, "song-cover")}
+          <h1 style="margin-top:1rem;">${esc(alb.name)}</h1>
+          <h3 style="font-weight:600; font-family:var(--font-body);"><a href="/artist/${alb.artistSlug}" data-link style="color:var(--danger); text-decoration:none;">${esc(alb.artist)}</a></h3>
+          ${alb.releaseDate ? `<p style="font-size:0.85rem; color:var(--ink-dim);">Released ${esc(formatReleaseDate(alb.releaseDate))}</p>` : ''}
+
+          ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-album-box').classList.toggle('hidden')" style="background:#fff; margin-top:1rem;">Edit Album</button>` : ''}
+          ${isEditor ? `<button class="btn-submit" onclick="deleteAlbum('${alb.slug}')" style="background:var(--danger); color:#fff; border-color:var(--danger); margin-top:0.5rem;">Delete Album Page</button>` : ''}
+        </div>
+        <div style="flex:1; min-width:300px;">
+          <h3 style="margin-top:0;">Tracklist</h3>
+          <div class="form-container" style="max-width:600px;">
+            ${alb.tracks.length > 0 ? alb.tracks.map((t, i) => `
+              <a href="/song/${t.slug}" data-link style="display:flex; justify-content:space-between; align-items:center; gap:0.8rem; padding:0.6rem 0; border-bottom:1px solid var(--line); text-decoration:none; color:inherit;">
+                <span><strong>${t.trackNumber != null ? t.trackNumber : (i + 1)}.</strong> &nbsp; ${esc(t.title)}</span>
+              </a>
+            `).join('') : `<p class="empty-state">No tracks found for this album yet.</p>`}
+          </div>
+        </div>
+      </div>
+
+      ${canEdit ? `
+        <div id="edit-album-box" class="form-container floating-panel hidden">
+          <button type="button" class="panel-close" onclick="document.getElementById('edit-album-box').classList.add('hidden')" aria-label="Close">×</button>
+          <h3>Edit Album</h3>
+          <div class="form-group"><label>Release Date</label><input type="date" id="edit-album-release-date" value="${esc((alb.releaseDate || "").toString().substring(0, 10))}"></div>
+          ${imageInputHtml("edit-album-cover", "Cover Art (replace)", alb.coverUrl)}
+          <button class="btn-submit" onclick="saveAlbumEdit('${alb.slug}')">Save Changes</button>
+        </div>
+      ` : ''}
+    `;
+  } else {
+    container.innerHTML = errorMessage ? `<h2>Couldn't load this album</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Album not found</h2>";
+  }
+}
+
+async function saveAlbumEdit(slug) {
+  const user = getUser();
+  const coverResult = await getImageInputValue("edit-album-cover");
+  if (coverResult.error) return showStatus("album-status", coverResult.error);
+
+  const res = await apiCall({
+    action: "updateAlbum",
+    slug,
+    username: user.username,
+    releaseDate: document.getElementById("edit-album-release-date").value,
+    coverBase64: coverResult.base64,
+    coverImageUrl: coverResult.url
+  });
+
+  if (res.success) navigateTo(`/album/${slug}`);
+  else showStatus("album-status", res.message);
+}
+
+async function deleteAlbum(slug) {
+  if (!confirm("Delete this album page permanently? The songs themselves will stay online - only the album page is removed.")) return;
+  const user = getUser();
+  const res = await apiCall({ action: "deleteAlbum", slug, username: user.username });
+  if (res.success) navigateTo("/");
+  else showStatus("album-status", res.message);
 }
 
 // ---------- leaderboards ----------
