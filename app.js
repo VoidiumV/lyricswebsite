@@ -1,13 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbw3kAKTIbziQAP0BuP5TLyHIgxr7_z4iOu6Kb7kIB6W-34Hd3kYFzxseQc5P94xWa1s/exec"; // Paste your Web App URL here
-
-// Optional: once you've set GITHUB_TOKEN / GITHUB_REPO in the Apps Script's
-// Script Properties, paste the raw file URL here (e.g.
-// "https://raw.githubusercontent.com/USERNAME/REPO/main/lyrix-data.json").
-// When set, all browsing (home, song pages, artist pages) reads from this
-// static file instead of Apps Script, which is dramatically faster and
-// doesn't depend on Apps Script being fast or even reachable. Leave blank
-// to keep using Apps Script directly for reads — everything still works,
-// just slower.
+const API_URL = "https://script.google.com/macros/s/AKfycbw3kAKTIbziQAP0BuP5TLyHIgxr7_z4iOu6Kb7kIB6W-34Hd3kYFzxseQc5P94xWa1s/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -33,12 +24,6 @@ function navigateTo(url) {
   router();
 }
 
-// Always resolves — never throws and never hangs forever. A network error,
-// a timeout, or a non-JSON response (e.g. Apps Script serving a Google
-// sign-in page because the deployment isn't set to "Anyone can access")
-// all come back as { success:false, message }, so callers' existing
-// if(res.success)/else logic just works instead of leaving a button stuck
-// on "Publishing..." with no feedback.
 async function apiCall(data, timeoutMs = 25000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -54,7 +39,7 @@ async function apiCall(data, timeoutMs = 25000) {
     try {
       return JSON.parse(text);
     } catch (parseErr) {
-      return { success: false, message: "The server didn't return valid data. Double-check the Apps Script deployment is set to \"Execute as: Me\" / \"Who has access: Anyone\", and redeploy (New deployment) after any code change." };
+      return { success: false, message: "The server didn't return valid data. Double-check the Apps Script deployment." };
     }
   } catch (err) {
     if (err.name === "AbortError") {
@@ -66,10 +51,6 @@ async function apiCall(data, timeoutMs = 25000) {
   }
 }
 
-// Fetches the CDN-hosted snapshot (if DATA_URL is configured). Cached in
-// memory for DATA_CACHE_MS so navigating between pages doesn't refetch.
-// Returns null (never throws) if unset or unreachable, so callers can
-// fall back to apiCall.
 async function getData(forceFresh = false) {
   if (!DATA_URL) return null;
   if (!forceFresh && dataCache && (Date.now() - dataCacheAt < DATA_CACHE_MS)) return dataCache;
@@ -95,18 +76,19 @@ function normalizeText(s) {
   return (s || "").toString().trim().toLowerCase();
 }
 
-// Matches the backend's slugify exactly, so client-side AKA-slug matching
-// (used for the /artist/<aka> redirect) lines up with server-generated slugs.
 function slugify(text) {
   return text ? text.toString().toLowerCase().trim().replace(/[\s\W-]+/g, '-') : '';
 }
 
-// Splits a free-text AKA field ("DPS, Daddy P") into individual trimmed names.
 function splitAkas(akasStr) {
   return (akasStr || "").toString().split(/[,;]+/).map(s => s.trim()).filter(Boolean);
 }
 
-// ---------- small utils ----------
+// Splits combined artists (Daddyphatsnaps & Keetheweeb) into an array
+function splitArtists(artistStr) {
+  if (!artistStr) return [];
+  return artistStr.toString().split(/(?:\s*&\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*,\s*)/i).map(s => s.trim()).filter(Boolean);
+}
 
 function esc(str) {
   return (str === undefined || str === null ? "" : str.toString())
@@ -127,12 +109,6 @@ function avatarHtml(url, label) {
   if (url) return `<img src="${esc(url)}" alt="${esc(label)}" loading="lazy">`;
   return `<div class="avatar-fallback">${esc(initials(label))}</div>`;
 }
-
-// ---------- audio embeds ----------
-// Turns a raw link into an inline player where we can reliably derive an
-// embed URL, and falls back to a plain "open in new tab" badge otherwise
-// (Bandcamp needs a per-track embed code we don't have from a plain URL,
-// so it always falls back).
 
 function linkFallback(platform, url) {
   return `<a href="${esc(url)}" target="_blank" rel="noopener" class="badge">${esc(platform)}</a>`;
@@ -165,9 +141,6 @@ function embedHtml(platform, url) {
   }
 }
 
-// Resizes + compresses an image client-side before it's base64-encoded and
-// POSTed to Apps Script. Full-resolution phone photos are the #1 cause of
-// slow uploads (multi-MB payloads to parse, decode, and push to Drive).
 function fileToCompressedBase64(file, maxDim = 900, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -285,16 +258,17 @@ async function renderHome(container, query = "") {
   const snapshot = await getData();
   if (snapshot) {
     const terms = normalizeText(query).split(/\s+/).filter(Boolean);
-    // Map artistSlug -> searchable text (name's own AKAs), so a song matches
-    // a query typed against the artist's AKA even though the song object
-    // itself only carries the artist's primary name.
     const akaTextBySlug = {};
     (snapshot.artists || []).forEach(a => { akaTextBySlug[a.slug] = normalizeText(a.name + " " + (a.akas || "")); });
 
     songs = snapshot.songs
       .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || s.artist)).includes(t)))
       .slice(0, 24);
-    artists = snapshot.artists.slice(0, 12);
+      
+    // Fix 4: Properly filter artists on the frontend
+    artists = snapshot.artists
+      .filter(a => terms.length === 0 || terms.every(t => normalizeText(a.name + " " + (a.akas || "")).includes(t)))
+      .slice(0, 12);
   } else {
     const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
     if (res.success) {
@@ -331,7 +305,7 @@ async function renderHome(container, query = "") {
   } else if (errorMessage) {
     artistRow.innerHTML = `<p class="empty-state">Couldn't load artists.</p>`;
   } else {
-    artistRow.innerHTML = `<p class="empty-state">No artist pages yet.</p>`;
+    artistRow.innerHTML = `<p class="empty-state">No matching artists found.</p>`;
   }
 }
 
@@ -377,7 +351,7 @@ function renderAddSong(container) {
       <h2>Add New Song Lyrics</h2>
       <div id="song-status" class="status-banner hidden"></div>
       <div class="form-group"><label>Song Title</label><input type="text" id="song-title"></div>
-      <div class="form-group"><label>Artist</label><input type="text" id="song-artist"></div>
+      <div class="form-group"><label>Artist</label><input type="text" id="song-artist" placeholder="Separate multiple with '&' or ','"></div>
       <div class="form-group" style="display:flex; align-items:center; gap:0.5rem;">
         <input type="checkbox" id="is-single" onchange="document.getElementById('album-group').classList.toggle('hidden', this.checked)" style="width:auto;">
         <label for="is-single" style="margin:0;">This song is a Single</label>
@@ -457,8 +431,6 @@ async function renderSongDetail(container, slug) {
   const snapshot = await getData();
   if (snapshot) s = snapshot.songs.find(song => song.slug === slug) || null;
 
-  // Falls back to a live lookup if not in the snapshot yet (e.g. it was
-  // just added and the CDN copy hasn't caught up) or if no CDN is configured.
   if (!s) {
     const res = await apiCall({ action: "getSong", slug });
     if (res.success) s = res.song; else errorMessage = res.message;
@@ -469,10 +441,13 @@ async function renderSongDetail(container, slug) {
     const isEditor = user && user.isEditor;
     const isTranscriber = user && user.isTranscriber;
     const isCreator = user && user.username === s.createdBy;
-
-    // Transcribers, Editors, and creators can edit (unless locked complete)
     const canEdit = isEditor || isTranscriber || (isCreator && !s.isComplete);
     const audioEntries = Object.entries(s.audioLinks || {}).filter(([, v]) => v);
+
+    // Fix 2: Render each split artist individually as a link
+    const artistLinks = splitArtists(s.artist)
+      .map(a => `<a href="/artist/${slugify(a)}" data-link style="color:var(--danger); text-decoration:none;">${esc(a)}</a>`)
+      .join(" & ");
 
     container.innerHTML = `
       <div id="song-edit-status" class="status-banner hidden"></div>
@@ -480,7 +455,7 @@ async function renderSongDetail(container, slug) {
         <div>
           ${coverHtml(s.coverUrl, s.title, "song-cover")}
           <h1 style="margin-top:1rem;">${esc(s.title)} ${s.isComplete ? '✅' : ''}</h1>
-          <h3 style="font-weight:600; font-family:var(--font-body);"><a href="/artist/${s.artistSlug}" data-link style="color:var(--danger); text-decoration:none;">${esc(s.artist)}</a> ${s.album ? '• ' + esc(s.album) : ''}</h3>
+          <h3 style="font-weight:600; font-family:var(--font-body);">${artistLinks} ${s.album ? '• ' + esc(s.album) : ''}</h3>
           <p style="font-size:0.85rem; color:var(--ink-dim);">Added by @${esc(s.createdBy)}</p>
 
           ${audioEntries.length > 0 ? `
@@ -593,10 +568,6 @@ async function renderArtistDetail(container, slug) {
     if (res.success) allArtists = res.artists;
   }
 
-  // AKA redirect: "/artist/dps" should land on the canonical "/artist/daddyphatsnaps"
-  // page. If the requested slug isn't anyone's primary slug but matches a
-  // slugified AKA, swap the URL (without adding a history entry) and
-  // continue rendering under the canonical slug.
   if (allArtists) {
     const isDirectMatch = allArtists.some(a => a.slug === slug);
     if (!isDirectMatch) {
@@ -611,9 +582,15 @@ async function renderArtistDetail(container, slug) {
   let a = null, errorMessage = null;
   if (snapshot) {
     const artistMeta = snapshot.artists.find(ar => ar.slug === slug) || null;
-    const songs = snapshot.songs.filter(s => s.artistSlug === slug).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
+    
+    // Fix 2: Filter songs matching the split artist slug
+    const songs = snapshot.songs.filter(s => {
+      const slugs = splitArtists(s.artist).map(slugify);
+      return slugs.includes(slug) || s.artistSlug === slug;
+    }).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
+
     if (artistMeta) a = Object.assign({ streamLinks: {} }, artistMeta, { songs });
-    else if (songs.length > 0) a = { slug, name: snapshot.songs.find(s => s.artistSlug === slug).artist, pfpUrl: "", akas: "", streamLinks: {}, songs };
+    else if (songs.length > 0) a = { slug, name: snapshot.songs.find(s => splitArtists(s.artist).map(slugify).includes(slug) || s.artistSlug === slug).artist, pfpUrl: "", akas: "", streamLinks: {}, songs };
   }
 
   if (!a) {
