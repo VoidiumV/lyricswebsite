@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbx69jn6kfv9agj3Hcd5SKKLwcN9WkYg-USR4IxLLqKtZotVFMfrZAbwth_HpY95KNtE/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbwigF1B1z90RuQ9czEuvztXu1IwBAA1vsS4HpL2Uq0urJVCsDq0Q1hklGT0hbTwKXp9/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -84,10 +84,19 @@ function splitAkas(akasStr) {
   return (akasStr || "").toString().split(/[,;]+/).map(s => s.trim()).filter(Boolean);
 }
 
-// Splits combined artists (Daddyphatsnaps & Keetheweeb) into an array
+function cleanArtist(str) {
+  if (!str) return "";
+  return str.toString()
+    .replace(/[\u00A0\u200B\u200C\u200D\uFEFF\uFFFD]/g, " ")
+    .replace(/\?/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Splits combined artists into an array safely
 function splitArtists(artistStr) {
   if (!artistStr) return [];
-  return artistStr.toString().split(/(?:\s*&\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*,\s*)/i).map(s => s.trim()).filter(Boolean);
+  return cleanArtist(artistStr).split(/(?:\s*&\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*,\s*)/i).filter(Boolean);
 }
 
 function esc(str) {
@@ -97,6 +106,13 @@ function esc(str) {
 
 function initials(name) {
   return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+}
+
+function ensureUrl(url) {
+  if (!url) return "";
+  const s = url.toString().trim();
+  if (!/^https?:\/\//i.test(s)) return "https://" + s;
+  return s;
 }
 
 function coverHtml(url, label, cls) {
@@ -111,11 +127,12 @@ function avatarHtml(url, label) {
 }
 
 function linkFallback(platform, url) {
-  return `<a href="${esc(url)}" target="_blank" rel="noopener" class="badge">${esc(platform)}</a>`;
+  return `<a href="${esc(ensureUrl(url))}" target="_blank" rel="noopener" class="badge">${esc(platform)}</a>`;
 }
 
 function embedHtml(platform, url) {
   if (!url) return "";
+  url = ensureUrl(url);
   try {
     if (platform === "youtube") {
       const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{6,})/);
@@ -259,15 +276,14 @@ async function renderHome(container, query = "") {
   if (snapshot) {
     const terms = normalizeText(query).split(/\s+/).filter(Boolean);
     const akaTextBySlug = {};
-    (snapshot.artists || []).forEach(a => { akaTextBySlug[a.slug] = normalizeText(a.name + " " + (a.akas || "")); });
+    (snapshot.artists || []).forEach(a => { akaTextBySlug[a.slug] = normalizeText(cleanArtist(a.name) + " " + (a.akas || "")); });
 
     songs = snapshot.songs
-      .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || s.artist)).includes(t)))
+      .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || cleanArtist(s.artist))).includes(t)))
       .slice(0, 24);
       
-    // Fix 4: Properly filter artists on the frontend
     artists = snapshot.artists
-      .filter(a => terms.length === 0 || terms.every(t => normalizeText(a.name + " " + (a.akas || "")).includes(t)))
+      .filter(a => terms.length === 0 || terms.every(t => normalizeText(cleanArtist(a.name) + " " + (a.akas || "")).includes(t)))
       .slice(0, 12);
   } else {
     const res = await apiCall({ action: "getHome", q: query || "", limit: 24 });
@@ -285,7 +301,7 @@ async function renderHome(container, query = "") {
         ${coverHtml(song.coverUrl, song.title)}
         <div class="card-info">
           <div class="card-title">${esc(song.title)}</div>
-          <div class="card-artist">${esc(song.artist)}</div>
+          <div class="card-artist">${esc(cleanArtist(song.artist))}</div>
         </div>
       </a>
     `).join("");
@@ -298,8 +314,8 @@ async function renderHome(container, query = "") {
   if (artists && artists.length > 0) {
     artistRow.innerHTML = artists.map(a => `
       <a href="/artist/${a.slug}" data-link class="artist-chip">
-        ${avatarHtml(a.pfpUrl, a.name)}
-        <div class="artist-chip-name">${esc(a.name)}</div>
+        ${avatarHtml(a.pfpUrl, cleanArtist(a.name))}
+        <div class="artist-chip-name">${esc(cleanArtist(a.name))}</div>
       </a>
     `).join("");
   } else if (errorMessage) {
@@ -361,11 +377,11 @@ function renderAddSong(container) {
       <div class="form-group"><label>Lyrics</label><textarea id="song-lyrics" rows="8"></textarea></div>
 
       <h3>Audio Links</h3>
-      <div class="form-group"><label>YouTube</label><input type="text" id="audio-youtube"></div>
-      <div class="form-group"><label>Spotify</label><input type="text" id="audio-spotify"></div>
-      <div class="form-group"><label>Apple Music</label><input type="text" id="audio-apple"></div>
-      <div class="form-group"><label>SoundCloud</label><input type="text" id="audio-soundcloud"></div>
-      <div class="form-group"><label>Bandcamp</label><input type="text" id="audio-bandcamp"></div>
+      <div class="form-group"><label>YouTube</label><input type="text" id="audio-youtube" placeholder="https://..."></div>
+      <div class="form-group"><label>Spotify</label><input type="text" id="audio-spotify" placeholder="https://..."></div>
+      <div class="form-group"><label>Apple Music</label><input type="text" id="audio-apple" placeholder="https://..."></div>
+      <div class="form-group"><label>SoundCloud</label><input type="text" id="audio-soundcloud" placeholder="https://..."></div>
+      <div class="form-group"><label>Bandcamp</label><input type="text" id="audio-bandcamp" placeholder="https://..."></div>
 
       <button class="btn-submit" id="submit-song-btn" onclick="submitSong()">Publish Lyrics</button>
     </div>
@@ -444,7 +460,6 @@ async function renderSongDetail(container, slug) {
     const canEdit = isEditor || isTranscriber || (isCreator && !s.isComplete);
     const audioEntries = Object.entries(s.audioLinks || {}).filter(([, v]) => v);
 
-    // Fix 2: Render each split artist individually as a link
     const artistLinks = splitArtists(s.artist)
       .map(a => `<a href="/artist/${slugify(a)}" data-link style="color:var(--danger); text-decoration:none;">${esc(a)}</a>`)
       .join(" & ");
@@ -476,7 +491,7 @@ async function renderSongDetail(container, slug) {
           <button type="button" class="panel-close" onclick="document.getElementById('edit-song-box').classList.add('hidden')" aria-label="Close">×</button>
           <h3>Edit Song Information</h3>
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
-          <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(s.artist)}"></div>
+          <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(cleanArtist(s.artist))}"></div>
           <div class="form-group"><label>Cover Art (replace)</label><input type="file" id="edit-cover" accept="image/*"></div>
           <div class="form-group"><label>Lyrics</label><textarea id="edit-lyrics" rows="8">${esc(s.lyrics)}</textarea></div>
 
@@ -583,14 +598,13 @@ async function renderArtistDetail(container, slug) {
   if (snapshot) {
     const artistMeta = snapshot.artists.find(ar => ar.slug === slug) || null;
     
-    // Fix 2: Filter songs matching the split artist slug
     const songs = snapshot.songs.filter(s => {
       const slugs = splitArtists(s.artist).map(slugify);
       return slugs.includes(slug) || s.artistSlug === slug;
     }).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
 
     if (artistMeta) a = Object.assign({ streamLinks: {} }, artistMeta, { songs });
-    else if (songs.length > 0) a = { slug, name: snapshot.songs.find(s => splitArtists(s.artist).map(slugify).includes(slug) || s.artistSlug === slug).artist, pfpUrl: "", akas: "", streamLinks: {}, songs };
+    else if (songs.length > 0) a = { slug, name: cleanArtist(snapshot.songs.find(s => splitArtists(s.artist).map(slugify).includes(slug) || s.artistSlug === slug).artist), pfpUrl: "", akas: "", streamLinks: {}, songs };
   }
 
   if (!a) {
@@ -610,11 +624,11 @@ async function renderArtistDetail(container, slug) {
       <div style="display:flex; gap:2rem; align-items:center; flex-wrap:wrap;">
         ${a.pfpUrl
           ? `<img src="${esc(a.pfpUrl)}" style="width:150px; height:150px; border-radius:50%; object-fit:cover; border:2px solid var(--ink);">`
-          : `<div class="cover-fallback" style="width:150px; height:150px; border-radius:50%; font-size:2.4rem;">${esc(initials(a.name))}</div>`}
+          : `<div class="cover-fallback" style="width:150px; height:150px; border-radius:50%; font-size:2.4rem;">${esc(initials(cleanArtist(a.name)))}</div>`}
         <div>
-          <h1>${esc(a.name)}</h1>
+          <h1>${esc(cleanArtist(a.name))}</h1>
           ${a.akas ? `<p style="color:var(--ink-dim);">AKA: ${esc(a.akas)}</p>` : ''}
-          ${streamEntries.length > 0 ? `<div style="margin-top:0.4rem;">${streamEntries.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>`).join('')}</div>` : ''}
+          ${streamEntries.length > 0 ? `<div style="margin-top:0.4rem;">${streamEntries.map(([k, v]) => `<a href="${esc(ensureUrl(v))}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>`).join('')}</div>` : ''}
           <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.6rem;">
             ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#fff; width:auto; padding:0.6rem 1rem;">Edit Artist Profile</button>` : ''}
             ${isEditor ? `<button class="btn-submit" onclick="deleteArtist('${a.slug}')" style="background:var(--danger); color:#fff; border-color:var(--danger); width:auto; padding:0.6rem 1rem;">Delete Artist Profile</button>` : ''}
@@ -622,7 +636,7 @@ async function renderArtistDetail(container, slug) {
         </div>
       </div>
 
-      <h2 class="section-title">Songs by ${esc(a.name)}</h2>
+      <h2 class="section-title">Songs by ${esc(cleanArtist(a.name))}</h2>
       <div class="grid">
         ${a.songs.length > 0 ? a.songs.map(s => `
           <a href="/song/${s.slug}" data-link class="card">
@@ -641,11 +655,11 @@ async function renderArtistDetail(container, slug) {
           <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
 
           <h4>Listen / Follow Links</h4>
-          <div class="form-group"><label>YouTube</label><input type="text" id="artist-youtube" value="${esc(a.streamLinks.youtube || '')}"></div>
-          <div class="form-group"><label>Spotify</label><input type="text" id="artist-spotify" value="${esc(a.streamLinks.spotify || '')}"></div>
-          <div class="form-group"><label>Apple Music</label><input type="text" id="artist-apple" value="${esc(a.streamLinks.apple || '')}"></div>
-          <div class="form-group"><label>SoundCloud</label><input type="text" id="artist-soundcloud" value="${esc(a.streamLinks.soundcloud || '')}"></div>
-          <div class="form-group"><label>Bandcamp</label><input type="text" id="artist-bandcamp" value="${esc(a.streamLinks.bandcamp || '')}"></div>
+          <div class="form-group"><label>YouTube</label><input type="text" id="artist-youtube" value="${esc(a.streamLinks.youtube || '')}" placeholder="https://..."></div>
+          <div class="form-group"><label>Spotify</label><input type="text" id="artist-spotify" value="${esc(a.streamLinks.spotify || '')}" placeholder="https://..."></div>
+          <div class="form-group"><label>Apple Music</label><input type="text" id="artist-apple" value="${esc(a.streamLinks.apple || '')}" placeholder="https://..."></div>
+          <div class="form-group"><label>SoundCloud</label><input type="text" id="artist-soundcloud" value="${esc(a.streamLinks.soundcloud || '')}" placeholder="https://..."></div>
+          <div class="form-group"><label>Bandcamp</label><input type="text" id="artist-bandcamp" value="${esc(a.streamLinks.bandcamp || '')}" placeholder="https://..."></div>
 
           <button class="btn-submit" onclick="saveArtistEdit('${a.slug}')">Save Profile</button>
         </div>
