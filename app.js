@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbzB8L-rTulyhcGwgETUhQs9jo1SPx4D0l2tovUoqVutHusHnsS-W2mrKW3F7YUMkTOr/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbxf2WhbJlKSGZRv4MCpojn--FvEdsS40ZvxbUCkfw6sw60KJC3gBWAlg-SX4agpSVhY/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -220,28 +220,45 @@ function getUser() {
   return JSON.parse(localStorage.getItem("lyrix_user"));
 }
 
+// Re-fetches this user's roles/points from the backend and refreshes local
+// storage + the header. Call this after any action that could award points
+// (adding a song, adding cover art, creating an artist, setting a pfp) so
+// the header stays accurate without requiring a re-login.
+async function refreshUserInfo() {
+  const user = getUser();
+  if (!user) return;
+  const res = await apiCall({ action: "getUserInfo", username: user.username });
+  if (res.success) {
+    localStorage.setItem("lyrix_user", JSON.stringify(res.user));
+    updateAuthUI();
+  }
+}
+
 function updateAuthUI() {
   const user = getUser();
   const loginBtn = document.getElementById("login-btn");
   const logoutBtn = document.getElementById("logout-btn");
   const addLink = document.getElementById("add-link");
+  const settingsLink = document.getElementById("settings-link");
   const userDisplay = document.getElementById("user-display");
 
   if (user) {
     if (loginBtn) loginBtn.classList.add("hidden");
     if (logoutBtn) logoutBtn.classList.remove("hidden");
     if (addLink) addLink.classList.remove("hidden");
+    if (settingsLink) settingsLink.classList.toggle("hidden", !user.isEditor);
     if (userDisplay) {
       userDisplay.classList.remove("hidden");
       let roleTag = "";
       if (user.isEditor) roleTag = " (Editor)";
       else if (user.isTranscriber) roleTag = " (Transcriber)";
-      userDisplay.innerText = `@${user.username}${roleTag}`;
+      userDisplay.innerText = `@${user.username}${roleTag} · ${user.points || 0} pts`;
     }
   } else {
     if (loginBtn) loginBtn.classList.remove("hidden");
     if (logoutBtn) logoutBtn.classList.add("hidden");
     if (addLink) addLink.classList.add("hidden");
+    if (settingsLink) settingsLink.classList.add("hidden");
     if (userDisplay) userDisplay.classList.add("hidden");
   }
 }
@@ -276,6 +293,10 @@ async function router() {
     renderLogin(app);
   } else if (path === "/add") {
     renderAddSong(app);
+  } else if (path === "/leaderboard") {
+    renderLeaderboard(app);
+  } else if (path === "/settings") {
+    renderSettingsPage(app);
   } else if (path.startsWith("/song/")) {
     renderSongDetail(app, path.replace("/song/", ""));
   } else if (path.startsWith("/artist/")) {
@@ -469,8 +490,10 @@ async function submitSong() {
     audioLinks
   });
 
-  if (res.success) navigateTo(`/song/${res.slug}`);
-  else {
+  if (res.success) {
+    await refreshUserInfo();
+    navigateTo(`/song/${res.slug}`);
+  } else {
     btn.disabled = false;
     btn.innerText = "Publish Lyrics";
     showStatus("song-status", res.message);
@@ -594,8 +617,10 @@ async function saveSongEdit(songId) {
     isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
   });
 
-  if (res.success) navigateTo(`/song/${res.slug}`);
-  else {
+  if (res.success) {
+    await refreshUserInfo();
+    navigateTo(`/song/${res.slug}`);
+  } else {
     btn.disabled = false;
     btn.innerText = "Save Changes";
     showStatus("song-edit-status", res.message);
@@ -740,8 +765,10 @@ async function saveArtistEdit(slug) {
     streamLinks
   });
 
-  if (res.success) navigateTo(`/artist/${slug}`);
-  else showStatus("artist-status", res.message);
+  if (res.success) {
+    await refreshUserInfo();
+    navigateTo(`/artist/${slug}`);
+  } else showStatus("artist-status", res.message);
 }
 
 async function deleteArtist(slug) {
@@ -750,4 +777,70 @@ async function deleteArtist(slug) {
   const res = await apiCall({ action: "deleteArtist", slug, username: user.username });
   if (res.success) navigateTo("/");
   else showStatus("artist-status", res.message);
+}
+
+// ---------- leaderboard ----------
+
+async function renderLeaderboard(container) {
+  container.innerHTML = `<h2 class="section-title">Leaderboard</h2><div id="leaderboard-list">Loading...</div>`;
+  const res = await apiCall({ action: "getLeaderboard", limit: 50 });
+  const list = document.getElementById("leaderboard-list");
+
+  if (!res.success || !res.leaderboard || res.leaderboard.length === 0) {
+    list.innerHTML = `<p class="empty-state">${esc(res.message || "No contributors yet.")}</p>`;
+    return;
+  }
+
+  list.innerHTML = `
+    <div class="form-container" style="max-width:600px;">
+      ${res.leaderboard.map((u, i) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0; border-bottom:1px solid var(--line);">
+          <span><strong>#${i + 1}</strong> &nbsp; @${esc(u.username)} ${u.isEditor ? '<span class="badge">Editor</span>' : (u.isTranscriber ? '<span class="badge">Transcriber</span>' : '')}</span>
+          <span style="font-weight:700;">${u.points} pts</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+// ---------- settings (editor-only point values) ----------
+
+async function renderSettingsPage(container) {
+  const user = getUser();
+  if (!user || !user.isEditor) {
+    container.innerHTML = `<h2>Settings</h2><p class="empty-state">Editor access required.</p>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="form-container"><h2>Point Settings</h2><p style="color:var(--ink-dim); font-size:0.9rem;">Loading...</p></div>`;
+  const res = await apiCall({ action: "getSettings" });
+  if (!res.success) {
+    container.innerHTML = `<h2>Settings</h2><p class="empty-state">${esc(res.message || "Couldn't load settings.")}</p>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="form-container">
+      <h2>Point Settings</h2>
+      <p style="color:var(--ink-dim); font-size:0.85rem; margin-top:-0.6rem;">Points awarded to users for contributing.</p>
+      <div id="settings-status" class="status-banner hidden"></div>
+      ${Object.keys(res.settings).map(k => `
+        <div class="form-group">
+          <label>${esc(res.labels[k] || k)}</label>
+          <input type="number" step="1" class="setting-input" data-key="${esc(k)}" value="${esc(res.settings[k])}">
+        </div>
+      `).join("")}
+      <button class="btn-submit" onclick="saveSettings()">Save Settings</button>
+    </div>
+  `;
+}
+
+async function saveSettings() {
+  const user = getUser();
+  const updates = {};
+  document.querySelectorAll(".setting-input").forEach(el => { updates[el.dataset.key] = Number(el.value) || 0; });
+
+  const res = await apiCall({ action: "updateSettings", username: user.username, settings: JSON.stringify(updates) });
+  if (res.success) showStatus("settings-status", "Settings saved.", true);
+  else showStatus("settings-status", res.message);
 }
