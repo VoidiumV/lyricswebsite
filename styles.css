@@ -48,6 +48,12 @@ header {
   flex-wrap: wrap;
 }
 
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
 .logo {
   font-family: var(--font-display);
   font-size: 1.4rem;
@@ -68,13 +74,31 @@ header {
   transform: skew(-6deg);
 }
 
+#owner-link {
+  background: var(--ink);
+  color: var(--accent) !important;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+#owner-link:hover { background: var(--danger); color: var(--surface) !important; }
+
 nav {
   display: flex;
   align-items: center;
   gap: 1.4rem;
 }
 
-nav a, nav button, #user-display {
+.nav-account {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+  margin-left: auto;
+}
+
+nav a, nav button, .nav-account a, .nav-account button, #user-display {
   color: var(--ink);
   text-decoration: none;
   background: none;
@@ -85,7 +109,7 @@ nav a, nav button, #user-display {
   font-size: 0.92rem;
 }
 
-nav a:hover, nav button:hover { color: var(--danger); }
+nav a:hover, nav button:hover, .nav-account a:hover, .nav-account button:hover { color: var(--danger); }
 
 #add-link {
   background: var(--ink);
@@ -184,6 +208,16 @@ header .search-box input { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 1.3rem;
+}
+
+/* Clips the "Recently Added" grid on the home page to exactly 4 rows,
+   regardless of how many columns the current viewport width fits. Any
+   items that would overflow into a 5th+ row collapse to 0 height and are
+   hidden rather than being fetched/rendered at all in excess. */
+.grid.grid-limit-4 {
+  grid-template-rows: repeat(4, auto);
+  grid-auto-rows: 0;
+  overflow: hidden;
 }
 
 .card {
