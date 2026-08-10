@@ -334,7 +334,7 @@ label {
   font-size: 0.88rem;
 }
 
-input, textarea {
+input, textarea, select {
   width: 100%;
   padding: 0.65rem 0.8rem;
   background: var(--bg);
@@ -346,9 +346,14 @@ input, textarea {
   font-size: 0.95rem;
 }
 
-input:focus, textarea:focus {
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--ink);
+}
+
+select {
+  cursor: pointer;
+  font-weight: 600;
 }
 
 button.btn-submit {
@@ -374,6 +379,33 @@ button.btn-submit:disabled { opacity: 0.6; cursor: default; }
 }
 .status-banner.error { background: #FBE7E5; color: var(--danger); border: 1px solid #F1BDB8; }
 .status-banner.success { background: #E7F6E9; color: #1E6B33; border: 1px solid #BFE6C6; }
+
+/* ---------- image input toggle (upload file vs. paste URL) ---------- */
+/* Used for song cover art and artist profile pictures anywhere a file
+   input previously stood alone - lets people paste a direct image URL
+   instead of uploading a file. */
+
+.image-input-toggle {
+  display: flex;
+  gap: 1.1rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.image-input-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.image-input-toggle input[type="radio"] {
+  width: auto;
+  cursor: pointer;
+}
 
 /* ---------- song detail ---------- */
 
