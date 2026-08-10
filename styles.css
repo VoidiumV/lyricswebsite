@@ -515,3 +515,15 @@ button.btn-submit:disabled { opacity: 0.6; cursor: default; }
     max-height: 65vh;
   }
 }
+
+.song-detail > div:first-child {
+  flex: 1 1 280px;
+  min-width: 280px;
+  max-width: 420px;
+}
+
+.song-detail h1 {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  font-size: clamp(1.3rem, 2.5vw, 1.9rem);
+}
