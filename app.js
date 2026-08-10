@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbwigF1B1z90RuQ9czEuvztXu1IwBAA1vsS4HpL2Uq0urJVCsDq0Q1hklGT0hbTwKXp9/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbzB8L-rTulyhcGwgETUhQs9jo1SPx4D0l2tovUoqVutHusHnsS-W2mrKW3F7YUMkTOr/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -77,26 +77,52 @@ function normalizeText(s) {
 }
 
 function slugify(text) {
-  return text ? text.toString().toLowerCase().trim().replace(/[\s\W-]+/g, '-') : '';
+  return text ? text.toString().toLowerCase().trim().replace(/[\s\W-]+/g, '-').replace(/^-+|-+$/g, '') : '';
 }
 
 function splitAkas(akasStr) {
   return (akasStr || "").toString().split(/[,;]+/).map(s => s.trim()).filter(Boolean);
 }
 
-function cleanArtist(str) {
+// Strips ALL invisible/control/format/space-like unicode characters (not
+// just a hand-picked few), which is what was causing stray characters to
+// render as "?" (tofu) in the browser - e.g. "Callie?Mae" instead of
+// "Callie Mae". Mirrors the same fix on the backend.
+function cleanText(str) {
   if (!str) return "";
   return str.toString()
-    .replace(/[\u00A0\u200B\u200C\u200D\uFEFF\uFFFD]/g, " ")
-    .replace(/\?/g, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Zs}\uFFFD]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function cleanArtist(str) {
+  if (!str) return "";
+  return cleanText(str).replace(/\?/g, " ").replace(/\s+/g, " ").trim();
 }
 
 // Splits combined artists into an array safely
 function splitArtists(artistStr) {
   if (!artistStr) return [];
   return cleanArtist(artistStr).split(/(?:\s*&\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*,\s*)/i).filter(Boolean);
+}
+
+// Given a list of {name, slug, ...} artist objects (e.g. from the public
+// snapshot), expands any entry whose name is actually a combined byline
+// ("A & B") into separate entries and de-dupes by slug. This protects
+// against legacy/stale snapshot data that hasn't been republished yet.
+function expandArtists(list) {
+  const seen = new Map();
+  (list || []).forEach(a => {
+    const parts = splitArtists(a.name);
+    const names = parts.length > 0 ? parts : [a.name];
+    names.forEach(nm => {
+      const slug = slugify(nm);
+      if (!slug || seen.has(slug)) return;
+      seen.set(slug, Object.assign({}, a, { name: nm, slug: slug }));
+    });
+  });
+  return Array.from(seen.values());
 }
 
 function esc(str) {
@@ -108,10 +134,17 @@ function initials(name) {
   return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
 }
 
+// Normalizes a raw string into a safe, absolute http(s) URL with a real
+// host, or "" if it can't be made into one. Returning "" (instead of a
+// broken/empty URL) means callers can skip rendering a link entirely rather
+// than emitting an `href=""` anchor — which, with target="_blank", would
+// otherwise just reopen the current page in a new tab.
 function ensureUrl(url) {
   if (!url) return "";
-  const s = url.toString().trim();
-  if (!/^https?:\/\//i.test(s)) return "https://" + s;
+  let s = url.toString().trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  if (!/^https?:\/\/[^\s/]+\.[^\s/]+/i.test(s)) return "";
   return s;
 }
 
@@ -127,12 +160,15 @@ function avatarHtml(url, label) {
 }
 
 function linkFallback(platform, url) {
-  return `<a href="${esc(ensureUrl(url))}" target="_blank" rel="noopener" class="badge">${esc(platform)}</a>`;
+  const safeUrl = ensureUrl(url);
+  if (!safeUrl) return "";
+  return `<a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer" class="badge">${esc(platform)}</a>`;
 }
 
 function embedHtml(platform, url) {
   if (!url) return "";
   url = ensureUrl(url);
+  if (!url) return "";
   try {
     if (platform === "youtube") {
       const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{6,})/);
@@ -147,7 +183,7 @@ function embedHtml(platform, url) {
     if (platform === "apple") {
       const m = url.match(/music\.apple\.com\/(.+)/);
       if (!m) return linkFallback(platform, url);
-      return `<div class="embed-wrap embed-compact" style="height:175px;"><iframe src="https://embed.music.apple.com/${m[1]}" title="Apple Music player" allow="autoplay *; encrypted-media *;" loading="lazy"></iframe></div>`;
+      return `<div class="embed-wrap embed-compact" style="height:175px;"><iframe src="https://embed.music.apple.com/${encodeURI(m[1])}" title="Apple Music player" allow="autoplay *; encrypted-media *;" loading="lazy"></iframe></div>`;
     }
     if (platform === "soundcloud") {
       return `<div class="embed-wrap embed-compact" style="height:166px;"><iframe src="https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23ff5500&auto_play=false&show_teaser=false" title="SoundCloud player" loading="lazy"></iframe></div>`;
@@ -275,14 +311,17 @@ async function renderHome(container, query = "") {
   const snapshot = await getData();
   if (snapshot) {
     const terms = normalizeText(query).split(/\s+/).filter(Boolean);
+    // Expand any legacy combined artist rows before filtering/displaying,
+    // in case the published snapshot hasn't been rebuilt yet.
+    const expandedArtists = expandArtists(snapshot.artists);
     const akaTextBySlug = {};
-    (snapshot.artists || []).forEach(a => { akaTextBySlug[a.slug] = normalizeText(cleanArtist(a.name) + " " + (a.akas || "")); });
+    expandedArtists.forEach(a => { akaTextBySlug[a.slug] = normalizeText(cleanArtist(a.name) + " " + (a.akas || "")); });
 
     songs = snapshot.songs
       .filter(s => terms.length === 0 || terms.every(t => normalizeText(s.title + " " + (s.album || "") + " " + (akaTextBySlug[s.artistSlug] || cleanArtist(s.artist))).includes(t)))
       .slice(0, 24);
-      
-    artists = snapshot.artists
+
+    artists = expandedArtists
       .filter(a => terms.length === 0 || terms.every(t => normalizeText(cleanArtist(a.name) + " " + (a.akas || "")).includes(t)))
       .slice(0, 12);
   } else {
@@ -458,7 +497,7 @@ async function renderSongDetail(container, slug) {
     const isTranscriber = user && user.isTranscriber;
     const isCreator = user && user.username === s.createdBy;
     const canEdit = isEditor || isTranscriber || (isCreator && !s.isComplete);
-    const audioEntries = Object.entries(s.audioLinks || {}).filter(([, v]) => v);
+    const audioEntries = Object.entries(s.audioLinks || {}).filter(([, v]) => v && v.toString().trim());
 
     const artistLinks = splitArtists(s.artist)
       .map(a => `<a href="/artist/${slugify(a)}" data-link style="color:var(--danger); text-decoration:none;">${esc(a)}</a>`)
@@ -577,7 +616,9 @@ async function renderArtistDetail(container, slug) {
   container.innerHTML = "<p>Loading artist...</p>";
 
   const snapshot = await getData();
-  let allArtists = snapshot ? snapshot.artists : null;
+  // Expand any legacy combined artist rows before matching/displaying, in
+  // case the published snapshot hasn't been rebuilt yet.
+  let allArtists = snapshot ? expandArtists(snapshot.artists) : null;
   if (!allArtists) {
     const res = await apiCall({ action: "getArtists", limit: 999999 });
     if (res.success) allArtists = res.artists;
@@ -596,8 +637,8 @@ async function renderArtistDetail(container, slug) {
 
   let a = null, errorMessage = null;
   if (snapshot) {
-    const artistMeta = snapshot.artists.find(ar => ar.slug === slug) || null;
-    
+    const artistMeta = (allArtists || []).find(ar => ar.slug === slug) || null;
+
     const songs = snapshot.songs.filter(s => {
       const slugs = splitArtists(s.artist).map(slugify);
       return slugs.includes(slug) || s.artistSlug === slug;
@@ -617,7 +658,7 @@ async function renderArtistDetail(container, slug) {
     const user = getUser();
     const canEdit = user && (user.isEditor || user.username === a.createdBy);
     const isEditor = user && user.isEditor;
-    const streamEntries = Object.entries(a.streamLinks).filter(([, v]) => v);
+    const streamEntries = Object.entries(a.streamLinks).filter(([, v]) => v && v.toString().trim());
 
     container.innerHTML = `
       <div id="artist-status" class="status-banner hidden"></div>
@@ -628,7 +669,7 @@ async function renderArtistDetail(container, slug) {
         <div>
           <h1>${esc(cleanArtist(a.name))}</h1>
           ${a.akas ? `<p style="color:var(--ink-dim);">AKA: ${esc(a.akas)}</p>` : ''}
-          ${streamEntries.length > 0 ? `<div style="margin-top:0.4rem;">${streamEntries.map(([k, v]) => `<a href="${esc(ensureUrl(v))}" target="_blank" rel="noopener" class="badge">${esc(k)}</a>`).join('')}</div>` : ''}
+          ${streamEntries.length > 0 ? `<div style="margin-top:0.4rem;">${streamEntries.map(([k, v]) => linkFallback(k, v)).join('')}</div>` : ''}
           <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.6rem;">
             ${canEdit ? `<button class="btn-submit" onclick="document.getElementById('edit-artist-box').classList.toggle('hidden')" style="background:#fff; width:auto; padding:0.6rem 1rem;">Edit Artist Profile</button>` : ''}
             ${isEditor ? `<button class="btn-submit" onclick="deleteArtist('${a.slug}')" style="background:var(--danger); color:#fff; border-color:var(--danger); width:auto; padding:0.6rem 1rem;">Delete Artist Profile</button>` : ''}
