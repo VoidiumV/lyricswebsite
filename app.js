@@ -934,6 +934,13 @@ async function renderOwnerPage(container) {
         </div>
       `).join("")}
       <button class="btn-submit" onclick="saveSettings()">Save Settings</button>
+      <div class="form-container" style="margin-top:2rem;">
+        <h3>Manually Adjust User Points</h3>
+        <div id="points-status" class="status-banner hidden"></div>
+        <div class="form-group"><label>Username</label><input type="text" id="points-username" placeholder="username"></div>
+        <div class="form-group"><label>Points (negative to subtract)</label><input type="number" step="1" id="points-amount" placeholder="e.g. 25 or -10"></div>
+        <button class="btn-submit" onclick="adjustPoints()">Apply</button>
+      </div>
     </div>
   `;
 }
@@ -946,4 +953,20 @@ async function saveSettings() {
   const res = await apiCall({ action: "updateSettings", username: user.username, settings: JSON.stringify(updates) });
   if (res.success) showStatus("settings-status", "Settings saved.", true);
   else showStatus("settings-status", res.message);
+}
+
+async function adjustPoints() {
+  const user = getUser();
+  const targetUsername = document.getElementById("points-username").value.trim();
+  const amount = document.getElementById("points-amount").value;
+
+  if (!targetUsername || !amount) return showStatus("points-status", "Enter a username and a point amount.");
+
+  const res = await apiCall({ action: "adjustUserPoints", username: user.username, targetUsername, amount });
+  if (res.success) {
+    showStatus("points-status", res.message, true);
+    document.getElementById("points-amount").value = "";
+  } else {
+    showStatus("points-status", res.message);
+  }
 }
