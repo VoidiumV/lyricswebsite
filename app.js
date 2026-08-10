@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbxAf2psdIda1NgzQ_Fyd7OEuh4q_og4wi69B3G_g6W6EoJv_tVe1Q0JgoLp7jBZPxjU/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbzftFiN0rPJU_p-GxvW8MikRGMYpdfJrYZ8G2BUCwAv8Rrce_RH8oB4Z0FOshV-AvA2/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
@@ -114,6 +114,15 @@ function splitArtists(artistStr) {
   return cleanArtist(artistStr).split(/(?:\s*&\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*,\s*)/i).filter(Boolean);
 }
 
+// Splits a song's album field into individual album/EP names, since one
+// song can appear on multiple different album releases (e.g. an original
+// album plus a later deluxe edition or compilation). Stored as a single
+// comma/semicolon-separated string, same pattern as artists.
+function splitAlbums(albumStr) {
+  if (!albumStr) return [];
+  return cleanText(albumStr).split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+}
+
 // Given a list of {name, slug, ...} artist objects (e.g. from the public
 // snapshot), expands any entry whose name is actually a combined byline
 // ("A & B") into separate entries and de-dupes by slug. This protects
@@ -135,6 +144,21 @@ function expandArtists(list) {
 function esc(str) {
   return (str === undefined || str === null ? "" : str.toString())
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// Formats a "YYYY-MM-DD" (or full ISO) release date string for display
+// without letting JS's Date parsing shift it a day due to timezone
+// conversion on a date-only value.
+function formatReleaseDate(str) {
+  if (!str) return "";
+  const s = str.toString().trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return s;
+  const year = m[1], month = parseInt(m[2], 10), day = parseInt(m[3], 10);
+  if (month < 1 || month > 12) return s;
+  return `${MONTH_NAMES[month - 1]} ${day}, ${year}`;
 }
 
 function initials(name) {
@@ -265,6 +289,67 @@ function fileToCompressedBase64(file, maxDim = 900, quality = 0.85) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+// ---------- cover-art / profile-picture input (upload file OR paste URL) ----------
+//
+// Renders a small toggle that lets people either upload an image file (the
+// original behavior) or paste a direct image URL instead. Both inputs are
+// always present in the DOM; only the active one is visible, and
+// getImageInputValue() below reads whichever mode is selected at submit
+// time. `currentUrl`, if given, pre-fills the URL field as a convenience
+// (e.g. when editing something that already has a cover image) — it does
+// NOT change which mode is selected by default (always starts on "Upload
+// file").
+
+function imageInputHtml(prefix, label, currentUrl) {
+  return `
+    <div class="form-group">
+      <label>${esc(label)}</label>
+      <div class="image-input-toggle">
+        <label><input type="radio" name="${prefix}-mode" value="file" checked onchange="toggleImageInputMode('${prefix}')"> Upload file</label>
+        <label><input type="radio" name="${prefix}-mode" value="url" onchange="toggleImageInputMode('${prefix}')"> Image URL</label>
+      </div>
+      <input type="file" id="${prefix}-file" accept="image/*">
+      <input type="text" id="${prefix}-url" class="hidden" placeholder="https://..." value="${esc(currentUrl || "")}">
+    </div>
+  `;
+}
+
+function toggleImageInputMode(prefix) {
+  const checked = document.querySelector(`input[name="${prefix}-mode"]:checked`);
+  const mode = checked ? checked.value : "file";
+  const fileInput = document.getElementById(`${prefix}-file`);
+  const urlInput = document.getElementById(`${prefix}-url`);
+  if (fileInput) fileInput.classList.toggle("hidden", mode !== "file");
+  if (urlInput) urlInput.classList.toggle("hidden", mode !== "url");
+}
+
+// Reads whichever cover-art/profile-picture input mode is currently active
+// for the given field prefix. Returns { base64, url, error }. At most one
+// of base64/url is ever set; both null means "nothing provided" (leave
+// unchanged on an edit, or no image on a new item).
+async function getImageInputValue(prefix, maxDim = 900, quality = 0.85) {
+  const checked = document.querySelector(`input[name="${prefix}-mode"]:checked`);
+  const mode = checked ? checked.value : "file";
+
+  if (mode === "url") {
+    const urlInput = document.getElementById(`${prefix}-url`);
+    const url = urlInput ? urlInput.value.trim() : "";
+    return { base64: null, url: url || null, error: null };
+  }
+
+  const fileInput = document.getElementById(`${prefix}-file`);
+  if (fileInput && fileInput.files.length > 0) {
+    try {
+      const base64 = await fileToCompressedBase64(fileInput.files[0], maxDim, quality);
+      return { base64, url: null, error: null };
+    } catch (e) {
+      return { base64: null, url: null, error: "Could not process that image." };
+    }
+  }
+
+  return { base64: null, url: null, error: null };
 }
 
 function getUser() {
@@ -494,8 +579,12 @@ function renderAddSong(container) {
         <input type="checkbox" id="is-single" onchange="document.getElementById('album-group').classList.toggle('hidden', this.checked)" style="width:auto;">
         <label for="is-single" style="margin:0;">This song is a Single</label>
       </div>
-      <div class="form-group" id="album-group"><label>Album / EP</label><input type="text" id="song-album"></div>
-      <div class="form-group"><label>Cover Art</label><input type="file" id="song-cover" accept="image/*"></div>
+      <div class="form-group" id="album-group">
+        <label>Album(s) / EP(s)</label>
+        <input type="text" id="song-album" placeholder="Separate multiple with comma, e.g. Album A, Album B">
+      </div>
+      <div class="form-group"><label>Release Date</label><input type="date" id="song-release-date"></div>
+      ${imageInputHtml("song-cover", "Cover Art")}
       <div class="form-group">
         <label>Lyrics (paste text, or a single Google Doc link)</label>
         <textarea id="song-lyrics" rows="8"></textarea>
@@ -527,16 +616,11 @@ async function submitSong() {
   btn.disabled = true;
   btn.innerText = "Publishing...";
 
-  let coverBase64 = null;
-  const fileInput = document.getElementById("song-cover");
-  if (fileInput.files.length > 0) {
-    try {
-      coverBase64 = await fileToCompressedBase64(fileInput.files[0]);
-    } catch (e) {
-      btn.disabled = false;
-      btn.innerText = "Publish Lyrics";
-      return showStatus("song-status", "Could not process that image.");
-    }
+  const coverResult = await getImageInputValue("song-cover");
+  if (coverResult.error) {
+    btn.disabled = false;
+    btn.innerText = "Publish Lyrics";
+    return showStatus("song-status", coverResult.error);
   }
 
   const audioLinks = {
@@ -553,8 +637,10 @@ async function submitSong() {
     title, artist,
     isSingle: document.getElementById("is-single").checked,
     album: document.getElementById("song-album").value,
+    releaseDate: document.getElementById("song-release-date").value,
     lyrics: document.getElementById("song-lyrics").value,
-    coverBase64,
+    coverBase64: coverResult.base64,
+    coverImageUrl: coverResult.url,
     audioLinks
   });
 
@@ -594,14 +680,18 @@ async function renderSongDetail(container, slug) {
       .map(a => `<a href="/artist/${slugify(a)}" data-link style="color:var(--danger); text-decoration:none;">${esc(a)}</a>`)
       .join(" & ");
 
+    // A song can be released on more than one album/EP - the stored field
+    // is a comma/semicolon-separated list, split back out here for display.
+    const albumDisplay = splitAlbums(s.album).join(" • ");
+
     container.innerHTML = `
       <div id="song-edit-status" class="status-banner hidden"></div>
       <div class="song-detail">
         <div>
           ${coverHtml(s.coverUrl, s.title, "song-cover")}
           <h1 style="margin-top:1rem;">${esc(s.title)} ${s.isComplete ? '✅' : ''}</h1>
-          <h3 style="font-weight:600; font-family:var(--font-body);">${artistLinks} ${s.album ? '• ' + esc(s.album) : ''}</h3>
-          <p style="font-size:0.85rem; color:var(--ink-dim);">Added by @${esc(s.createdBy)}</p>
+          <h3 style="font-weight:600; font-family:var(--font-body);">${artistLinks}${albumDisplay ? ' • ' + esc(albumDisplay) : ''}</h3>
+          ${s.releaseDate ? `<p style="font-size:0.85rem; color:var(--ink-dim);">Released ${esc(formatReleaseDate(s.releaseDate))}</p>` : ''}
 
           ${audioEntries.length > 0 ? `
             <div class="audio-links" style="margin-top:1rem;">
@@ -622,7 +712,9 @@ async function renderSongDetail(container, slug) {
           <h3>Edit Song Information</h3>
           <div class="form-group"><label>Title</label><input type="text" id="edit-title" value="${esc(s.title)}"></div>
           <div class="form-group"><label>Artist</label><input type="text" id="edit-artist" value="${esc(cleanArtist(s.artist))}"></div>
-          <div class="form-group"><label>Cover Art (replace)</label><input type="file" id="edit-cover" accept="image/*"></div>
+          <div class="form-group"><label>Album(s) / EP(s)</label><input type="text" id="edit-album" value="${esc(s.album)}" placeholder="Separate multiple with comma"></div>
+          <div class="form-group"><label>Release Date</label><input type="date" id="edit-release-date" value="${esc((s.releaseDate || "").toString().substring(0, 10))}"></div>
+          ${imageInputHtml("edit-cover", "Cover Art (replace)", s.coverUrl)}
           <div class="form-group">
             <label>Lyrics (paste text, or a single Google Doc link)</label>
             <textarea id="edit-lyrics" rows="8">${esc(s.lyrics)}</textarea>
@@ -659,16 +751,11 @@ async function saveSongEdit(songId) {
   btn.disabled = true;
   btn.innerText = "Saving...";
 
-  let coverBase64 = null;
-  const fileInput = document.getElementById("edit-cover");
-  if (fileInput && fileInput.files.length > 0) {
-    try {
-      coverBase64 = await fileToCompressedBase64(fileInput.files[0]);
-    } catch (e) {
-      btn.disabled = false;
-      btn.innerText = "Save Changes";
-      return showStatus("song-edit-status", "Could not process that image.");
-    }
+  const coverResult = await getImageInputValue("edit-cover");
+  if (coverResult.error) {
+    btn.disabled = false;
+    btn.innerText = "Save Changes";
+    return showStatus("song-edit-status", coverResult.error);
   }
 
   const audioLinks = {
@@ -685,9 +772,12 @@ async function saveSongEdit(songId) {
     username: user.username,
     title: document.getElementById("edit-title").value,
     artist: document.getElementById("edit-artist").value,
+    album: document.getElementById("edit-album").value,
+    releaseDate: document.getElementById("edit-release-date").value,
     lyrics: document.getElementById("edit-lyrics").value,
     audioLinks: audioLinks,
-    coverBase64,
+    coverBase64: coverResult.base64,
+    coverImageUrl: coverResult.url,
     isComplete: document.getElementById("edit-is-complete") ? document.getElementById("edit-is-complete").checked : undefined
   });
 
@@ -741,7 +831,7 @@ async function renderArtistDetail(container, slug) {
     const songs = snapshot.songs.filter(s => {
       const slugs = splitArtists(s.artist).map(slugify);
       return slugs.includes(slug) || s.artistSlug === slug;
-    }).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug }));
+    }).map(s => ({ title: s.title, album: s.album, coverUrl: s.coverUrl, slug: s.slug, createdAt: s.createdAt, releaseDate: s.releaseDate || "" }));
 
     if (artistMeta) a = Object.assign({ streamLinks: {} }, artistMeta, { songs });
     else if (songs.length > 0) a = { slug, name: cleanArtist(snapshot.songs.find(s => splitArtists(s.artist).map(slugify).includes(slug) || s.artistSlug === slug).artist), pfpUrl: "", akas: "", streamLinks: {}, songs };
@@ -776,17 +866,18 @@ async function renderArtistDetail(container, slug) {
         </div>
       </div>
 
-      <h2 class="section-title">Songs by ${esc(cleanArtist(a.name))}</h2>
-      <div class="grid">
-        ${a.songs.length > 0 ? a.songs.map(s => `
-          <a href="/song/${s.slug}" data-link class="card">
-            ${coverHtml(s.coverUrl, s.title)}
-            <div class="card-info">
-              <div class="card-title">${esc(s.title)}</div>
-            </div>
-          </a>
-        `).join('') : '<p class="empty-state">No songs found for this artist.</p>'}
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; margin:2.5rem 0 1.1rem;">
+        <h2 class="section-title" style="margin:0;">Songs by ${esc(cleanArtist(a.name))}</h2>
+        <select id="artist-song-sort" onchange="sortArtistSongs()" style="width:auto; padding:0.5rem 0.7rem; font-size:0.85rem;">
+          <option value="recent-added">Recently Added</option>
+          <option value="oldest-added">Oldest Added</option>
+          <option value="az">Title A–Z</option>
+          <option value="za">Title Z–A</option>
+          <option value="release-recent">Release Date (Newest)</option>
+          <option value="release-oldest">Release Date (Oldest)</option>
+        </select>
       </div>
+      <div class="grid" id="artist-song-grid"></div>
 
       <h2 class="section-title">Top Contributors</h2>
       <div id="artist-leaderboard">Loading...</div>
@@ -795,7 +886,7 @@ async function renderArtistDetail(container, slug) {
         <div id="edit-artist-box" class="form-container hidden" style="margin-top:2rem;">
           <h3>Edit Profile Information</h3>
           <div class="form-group"><label>AKAs (comma-separated)</label><input type="text" id="artist-akas" value="${esc(a.akas)}"></div>
-          <div class="form-group"><label>Profile Picture</label><input type="file" id="artist-pfp" accept="image/*"></div>
+          ${imageInputHtml("artist-pfp", "Profile Picture", a.pfpUrl)}
 
           <h4>Listen / Follow Links</h4>
           <div class="form-group"><label>YouTube</label><input type="text" id="artist-youtube" value="${esc(a.streamLinks.youtube || '')}" placeholder="https://..."></div>
@@ -809,22 +900,68 @@ async function renderArtistDetail(container, slug) {
       ` : ''}
     `;
 
+    currentArtistSongs = a.songs || [];
+    sortArtistSongs();
+
     loadArtistLeaderboard(a.slug, document.getElementById("artist-leaderboard"));
   } else {
     container.innerHTML = errorMessage ? `<h2>Couldn't load this artist</h2><p class="empty-state">${esc(errorMessage)}</p>` : "<h2>Artist not found</h2>";
   }
 }
 
+// Holds the current artist's songs so the sort dropdown can re-render
+// without needing to re-fetch anything.
+let currentArtistSongs = [];
+
+function renderArtistSongGrid(songs) {
+  const grid = document.getElementById("artist-song-grid");
+  if (!grid) return;
+  grid.innerHTML = songs.length > 0 ? songs.map(s => `
+    <a href="/song/${s.slug}" data-link class="card">
+      ${coverHtml(s.coverUrl, s.title)}
+      <div class="card-info">
+        <div class="card-title">${esc(s.title)}</div>
+      </div>
+    </a>
+  `).join('') : '<p class="empty-state">No songs found for this artist.</p>';
+}
+
+function sortArtistSongs() {
+  const select = document.getElementById("artist-song-sort");
+  const sortBy = select ? select.value : "recent-added";
+  const songs = currentArtistSongs.slice();
+
+  switch (sortBy) {
+    case "az":
+      songs.sort((a, b) => a.title.localeCompare(b.title));
+      break;
+    case "za":
+      songs.sort((a, b) => b.title.localeCompare(a.title));
+      break;
+    case "oldest-added":
+      songs.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+      break;
+    case "release-recent":
+      songs.sort((a, b) => new Date(b.releaseDate || 0) - new Date(a.releaseDate || 0));
+      break;
+    case "release-oldest":
+      songs.sort((a, b) => new Date(a.releaseDate || 0) - new Date(b.releaseDate || 0));
+      break;
+    case "recent-added":
+    default:
+      songs.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      break;
+  }
+
+  renderArtistSongGrid(songs);
+}
+
 async function saveArtistEdit(slug) {
   const user = getUser();
-  let pfpBase64 = null;
-  const fileInput = document.getElementById("artist-pfp");
-  if (fileInput.files.length > 0) {
-    try {
-      pfpBase64 = await fileToCompressedBase64(fileInput.files[0], 500, 0.85);
-    } catch (e) {
-      return showStatus("artist-status", "Could not process that image.");
-    }
+
+  const pfpResult = await getImageInputValue("artist-pfp", 500, 0.85);
+  if (pfpResult.error) {
+    return showStatus("artist-status", pfpResult.error);
   }
 
   const streamLinks = {
@@ -840,7 +977,8 @@ async function saveArtistEdit(slug) {
     slug,
     username: user.username,
     akas: document.getElementById("artist-akas").value,
-    pfpBase64,
+    pfpBase64: pfpResult.base64,
+    pfpImageUrl: pfpResult.url,
     streamLinks
   });
 
