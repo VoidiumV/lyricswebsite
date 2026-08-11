@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbyMgHnHcELAy0PkSWXaeIEECsaV3WVjqOhFVq31ZnvW7Ku-wE6kdyN_Vp6oBbh9_WyN/exec"; 
+const API_URL = "https://script.google.com/macros/s/AKfycbxpJqUq2APLhl7s2hrYGx8a_SDIapd5dIt4NpY1mKU8LVzVOAaqQYgZQRDgfz0vUdQh/exec"; 
 const DATA_URL = "https://raw.githubusercontent.com/VoidiumV/lyricswebsite/main/lyrix-data.json";
 
 let dataCache = null;
